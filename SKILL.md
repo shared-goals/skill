@@ -20,6 +20,20 @@ Remote: git@github.com:shared-goals/skill.git
 Work directly here — never clone to /tmp to edit.
 To sync: cd ~/.hermes/skills/shared-goals && git pull / git push
 
+## Local Skill Setup
+
+This skill lives as a git repo tracked against `git@github.com:shared-goals/skill.git`:
+
+```bash
+# ~/.hermes/skills/shared-goals/ IS the git repo
+cd ~/.hermes/skills/shared-goals
+git status   # check sync
+git push     # publish changes
+```
+
+`references/` is gitignored — personal area yaml files live there, never committed.
+When adding files to SKILL.md schema, push to GitHub so the public skill stays current.
+
 ## Core Entities
 
 - **Goal** — a shared purpose people join (public, invite-only, or personal)
@@ -49,6 +63,37 @@ See [Shared Goals PRD](https://github.com/shared-goals/prd) for full workflow de
 - **Join a Goal** → find → review → set Contract → confirm
 - **Log a Commit** → identify Contract → record time + done + next_step → tag `skill_tag` → flag `is_happy_moment`
 - **Check Status** → list contracts → show Social Capital
+
+## Personal Area Skill Pattern
+
+Each life area maps to a Hermes skill via `references/<area>.yaml`. This is the
+interface pattern for Morning Check-in:
+
+- One file per area. Filename = area identity. DRY — no duplication across dimensions.
+- `prompt` field = instruction for the agent when calling the skill
+- `notes` field = human-readable description (readable via `ls references/`)
+- `status: enabled | not_yet | mockup`
+
+Skills that follow this pattern: `sosenki`, `homelab`, `news`, `weather`, `shag`, `calendar`.
+
+When SG platform API is ready, `references/*.yaml` files will be replaced by
+live contract data from `sg.contracts.list(user_id)`.
+
+## Git Setup
+
+This skill directory IS the git repo:
+```bash
+cd ~/.hermes/skills/shared-goals
+git remote -v  # → git@github.com:shared-goals/skill.git
+```
+`references/` is gitignored — never committed. Personal area yamls stay local only.
+
+When publishing changes to SKILL.md or templates/:
+```bash
+git add SKILL.md templates/
+git commit -m "..."
+git push
+```
 
 ## Morning Check-in
 

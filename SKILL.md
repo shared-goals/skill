@@ -15,6 +15,11 @@ and tracking progress together with others.
 or user-specific data in this file or any tracked file. All personal
 configuration lives exclusively in references/ which is gitignored.
 
+⛔ PITFALL (agent): ~/.hermes/skills/shared-goals/ IS the git repo.
+Remote: git@github.com:shared-goals/skill.git
+Work directly here — never clone to /tmp to edit.
+To sync: cd ~/.hermes/skills/shared-goals && git pull / git push
+
 ## Core Entities
 
 - **Goal** — a shared purpose people join (public, invite-only, or personal)
@@ -71,7 +76,8 @@ name: Example Area               # human-readable name
 dimensions: [faith, will]        # one or more: faith | will | feeling | mind
 skill: skill-name                # hermes skill to call for status, or null
 status: enabled                  # enabled | not_yet | mockup
-notes: ""                        # optional personal notes
+prompt: ""                       # instruction for the agent when calling the skill
+notes: ""                        # human-readable description (for ls references/)
 ```
 
 Files in `references/` are gitignored. Never commit them. Never reference

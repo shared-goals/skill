@@ -15,18 +15,19 @@ and tracking progress together with others.
 or user-specific data in this file or any tracked file. All personal
 configuration lives exclusively in references/ which is gitignored.
 
-⛔ PITFALL (agent): ~/.hermes/skills/shared-goals/ IS the git repo.
+⛔ PITFALL (agent): the git repo lives in this concrete skill directory, not at the category root:
+`~/.hermes/skills/shared-goals/shared-goals/`.
 Remote: git@github.com:shared-goals/skill.git
-Work directly here — never clone to /tmp to edit.
-To sync: cd ~/.hermes/skills/shared-goals && git pull / git push
+Work directly there — never clone to /tmp to edit.
+To sync: cd ~/.hermes/skills/shared-goals/shared-goals && git pull / git push
 
 ## Local Skill Setup
 
 This skill lives as a git repo tracked against `git@github.com:shared-goals/skill.git`:
 
 ```bash
-# ~/.hermes/skills/shared-goals/ IS the git repo
-cd ~/.hermes/skills/shared-goals
+# ~/.hermes/skills/shared-goals/shared-goals/ IS the git repo
+cd ~/.hermes/skills/shared-goals/shared-goals
 git status   # check sync
 git push     # publish changes
 ```
@@ -81,9 +82,9 @@ live contract data from `sg.contracts.list(user_id)`.
 
 ## Git Setup
 
-This skill directory IS the git repo:
+This skill directory is the git repo:
 ```bash
-cd ~/.hermes/skills/shared-goals
+cd ~/.hermes/skills/shared-goals/shared-goals
 git remote -v  # → git@github.com:shared-goals/skill.git
 ```
 `references/` is gitignored — never committed. Personal area yamls stay local only.

@@ -1,1 +1,4 @@
-references/
+*/references/
+*/logs/
+**/__pycache__/
+*.pyc

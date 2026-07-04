@@ -17,7 +17,6 @@ import argparse
 import json
 import os
 import re
-import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -28,16 +27,21 @@ from typing import Any
 from daily_compass_shared import (
 	AREA_SIGNAL_VERIFICATION_BASE_LINES,
 	AreaContext,
+	BOUNDARY_SCRIPT_TIMEOUT,
 	BoundaryAreaContext,
 	CompassContext,
 	area_context_definition_text,
 	build_numbered_lines,
 	build_skill_index,
+	resolve_hermes_argv,
+	resolve_non_tui_cli_argv,
+	sanitize_hermes_output,
 	extract_section,
 	normalize_text,
 	parse_inline_list,
 	parse_json_object,
 	parse_top_level_yaml,
+	run_subprocess_text,
 	run_boundary_script,
 	safe_str_key,
 	serialize_area_base,
@@ -72,6 +76,32 @@ AREA_PROMPT_LABEL = "Area signal prompt:"
 
 
 @dataclass
+class SignalJobResult:
+	key: str
+	area: BoundaryAreaContext | None
+	reason: str
+	ok: bool
+
+
+@dataclass
+class AreaSignalTask:
+	index: int
+	key: str
+	label: str
+	area: BoundaryAreaContext
+	area_prompt: str
+	prompt: str
+
+
+@dataclass
+class AreaSignalExecutionContext:
+	model: str
+	provider: str
+	logger: TraceLogger
+	session: HermesSessionState
+
+
+@dataclass
 class AreaConfig:
 	key: str
 	name: str
@@ -79,6 +109,14 @@ class AreaConfig:
 	skill: str
 	status: str
 	path: Path
+
+
+@dataclass
+class HermesSessionState:
+	mode: str
+	hermes_argv: list[str]
+	chat_argv: list[str]
+	session_id: str | None = None
 
 
 class TraceLogger:
@@ -155,9 +193,12 @@ def emit_text_block(write_line: Any, label: str, body: str, default: str = "") -
 	write_line("")
 
 
-def log_text_block(logger: TraceLogger, label: str, text: str) -> None:
+def log_text_block(logger: TraceLogger, label: str, text: str, elapsed: float | None = None) -> None:
 	logger.blank_line()
-	logger.log(label)
+	if elapsed is not None:
+		logger.log(f"{label} ({elapsed:.0f}s)")
+	else:
+		logger.log(label)
 	logger.blank_line()
 	body = normalize_text(text)
 	if logger.verbose:
@@ -477,46 +518,138 @@ def load_job_model_provider(job_name: str, logger: TraceLogger) -> tuple[str, st
 	return "", ""
 
 
-def run_hermes_raw(prompt: str, model: str, provider: str, logger: TraceLogger, label: str) -> str:
-	cmd = ["hermes"]
+def resolve_chat_argv() -> list[str]:
+	"""Resolve non-TUI CLI entrypoint for scripted chat calls."""
+	return resolve_non_tui_cli_argv()
+
+
+def extract_session_id(stderr_text: str) -> str | None:
+	match = re.search(r"session_id:\s*([^\s]+)", stderr_text or "")
+	if not match:
+		return None
+	value = str(match.group(1)).strip()
+	return value or None
+
+
+def build_hermes_cmd(prompt: str, model: str, provider: str, session: HermesSessionState) -> tuple[list[str], str]:
+	if not session.hermes_argv:
+		return [], "unavailable"
+
+	if session.mode == "oneshot":
+		cmd = list(session.hermes_argv)
+		if model:
+			cmd.extend(["-m", model])
+		if provider:
+			cmd.extend(["--provider", provider])
+		cmd.extend(["-z", prompt])
+		return cmd, "oneshot"
+
+	chat_base = list(session.chat_argv) if session.chat_argv else []
+	if chat_base:
+		cmd = chat_base
+		if session.session_id:
+			cmd.extend(["--resume", session.session_id])
+			mode = "chat_resume"
+		else:
+			mode = "chat_new"
+		cmd.extend(["--query", prompt, "--quiet"])
+		if model:
+			cmd.extend(["--model", model])
+		if provider:
+			cmd.extend(["--provider", provider])
+		return cmd, mode
+
+	cmd = list(session.hermes_argv)
+	cmd.append("chat")
 	if model:
 		cmd.extend(["-m", model])
 	if provider:
 		cmd.extend(["--provider", provider])
-	cmd.extend(["-z", prompt])
+	if session.session_id:
+		cmd.extend(["--resume", session.session_id])
+		mode = "chat_resume"
+	else:
+		mode = "chat_new"
+	cmd.extend(["-q", prompt, "-Q"])
+	return cmd, mode
+
+
+def run_hermes_raw(
+	prompt: str,
+	model: str,
+	provider: str,
+	logger: TraceLogger,
+	label: str,
+	session: HermesSessionState,
+) -> tuple[str, float]:
+	cmd, mode = build_hermes_cmd(prompt, model, provider, session)
+	if not cmd:
+		logger.log("Hermes command unavailable: neither PATH shim nor module fallback found")
+		return "[ERR:hermes_unavailable]", 0.0
 	started = datetime.now()
-	logger.log(f"Hermes call start: {label}")
-	try:
-		proc = subprocess.Popen(
-			cmd,
-			stdout=subprocess.PIPE,
-			stderr=subprocess.PIPE,
-			text=True,
-			env=os.environ.copy(),
-		)
-		try:
-			stdout_text, stderr_text = proc.communicate(timeout=180)
-		except subprocess.TimeoutExpired:
-			proc.kill()
-			stdout_text, stderr_text = proc.communicate()
-			logger.log(f"Hermes call timed out for {label}")
-			return "[ERR:hermes_timeout]"
-	except OSError as exc:
-		logger.log(f"Hermes call failed for {label}: {exc}")
-		return "[ERR:hermes_unavailable]"
-	if proc.returncode != 0:
+	logger.log(f"Hermes call start: {label} ({mode})")
+
+	def run_cmd(argv: list[str], run_mode: str) -> tuple[int, str, str] | None:
+		result = run_subprocess_text(argv, timeout=180, env=os.environ.copy())
+		if result.timed_out:
+			logger.log(f"Hermes call timed out for {label} ({run_mode})")
+			return (-1, "", "")
+		if result.launch_error:
+			logger.log(f"Hermes call failed for {label}: {result.stderr}")
+			return None
+		return (result.returncode, result.stdout, result.stderr)
+
+	result = run_cmd(cmd, mode)
+	if result is None:
+		return "[ERR:hermes_unavailable]", 0.0
+	if result[0] == -1:
+		return "[ERR:hermes_timeout]", 0.0
+
+	returncode, stdout_text, stderr_text = result
+
+	if returncode != 0 and mode == "chat_resume":
 		err = (stderr_text or "").strip()[:300]
-		logger.log(f"Hermes non-zero exit for {label} ({proc.returncode}): {err}")
-		return f"[ERR:hermes_exit_{proc.returncode}]"
-	text = (stdout_text or "").strip()
+		logger.log(f"Hermes resume failed for {label} ({returncode}): {err}")
+		logger.log(f"Hermes fallback start: {label} (chat_new)")
+		session.session_id = None
+		fallback_cmd, fallback_mode = build_hermes_cmd(prompt, model, provider, session)
+		result = run_cmd(fallback_cmd, fallback_mode)
+		if result is None:
+			return "[ERR:hermes_unavailable]", 0.0
+		if result[0] == -1:
+			return "[ERR:hermes_timeout]", 0.0
+		returncode, stdout_text, stderr_text = result
+		mode = fallback_mode
+
+	if session.mode == "chat" and returncode == 0:
+		session_id = extract_session_id(stderr_text)
+		if session_id:
+			if session.session_id != session_id:
+				logger.log(f"Hermes session id: {session_id}")
+			session.session_id = session_id
+
+	if returncode != 0:
+		err = (stderr_text or "").strip()[:300]
+		logger.log(f"Hermes non-zero exit for {label} ({returncode}): {err}")
+		return f"[ERR:hermes_exit_{returncode}]", 0.0
+
+	text = sanitize_hermes_output(stdout_text or "")
 	elapsed = (datetime.now() - started).total_seconds()
-	logger.log(f"Hermes call done: {label} ({elapsed:.1f}s)")
-	return text or "[ERR:hermes_empty]"
+	logger.log(f"Hermes call done: {label} ({mode}, {elapsed:.1f}s)")
+	return text or "[ERR:hermes_empty]", elapsed
 
 
-def run_hermes(prompt: str, model: str, provider: str, logger: TraceLogger, label: str, raw_response_label: str | None = None) -> str:
-	text = run_hermes_raw(prompt, model, provider, logger, label)
-	log_text_block(logger, raw_response_label or f"Raw response [{label}]", text)
+def run_hermes(
+	prompt: str,
+	model: str,
+	provider: str,
+	logger: TraceLogger,
+	label: str,
+	session: HermesSessionState,
+	raw_response_label: str | None = None,
+) -> str:
+	text, elapsed = run_hermes_raw(prompt, model, provider, logger, label, session)
+	log_text_block(logger, raw_response_label or f"Raw response [{label}]", text, elapsed=elapsed)
 	obj = parse_json_object(text)
 	result = ""
 	if obj and len(obj) == 1:
@@ -528,6 +661,124 @@ def run_hermes(prompt: str, model: str, provider: str, logger: TraceLogger, labe
 		line = text.splitlines()[0].strip() if text else ""
 		result = line if line else "[ERR:hermes_empty]"
 	return result
+
+
+def run_area_signal_job(
+	task: AreaSignalTask,
+	model: str,
+	provider: str,
+	logger: TraceLogger,
+	session: HermesSessionState,
+) -> SignalJobResult:
+	area_key = task.key
+	label = task.label
+	area = task.area
+	area_prompt = task.area_prompt
+	prompt = task.prompt
+	if not session.hermes_argv:
+		return SignalJobResult(key=area_key, area=None, reason="hermes_unavailable", ok=False)
+
+	if area_prompt_requests_json(area_prompt):
+		response_text, elapsed = run_hermes_raw(prompt, model, provider, logger, label, session)
+		log_text_block(logger, f"Raw area response [{label}]", response_text, elapsed=elapsed)
+		response_payload, reason = validate_json_response_strict(response_text, area_key)
+		second_try_used = False
+		if should_retry_area_signal(reason, response_payload):
+			logger.log(f"Invalid area signal JSON for {label}: {reason}; starting second try")
+			logger.blank_line()
+			logger.log(f"Retrying area signal for {label} due to {reason}")
+			retry_delta = (
+				f"Second try: previous response failed validation with reason '{reason}'. "
+				"Return exactly one JSON object only."
+			)
+			log_text_block(logger, f"Retry prompt delta [{label}:second_try]", retry_delta)
+			retry_prompt = f"{prompt}\n\n" + retry_delta
+			response_text, elapsed = run_hermes_raw(retry_prompt, model, provider, logger, f"{label}:second_try", session)
+			log_text_block(logger, f"Raw area response [{label}:second_try]", response_text, elapsed=elapsed)
+			response_payload, reason = validate_json_response_strict(response_text, area_key)
+			second_try_used = True
+		if not response_payload:
+			logger.log(f"Invalid area signal JSON for {label}; reason={reason}")
+			return SignalJobResult(key=area_key, area=None, reason=reason, ok=False)
+		updated_area = merge_area_signal_response(area, response_payload)
+		if not safe_str_key(updated_area, "ts") and safe_str_key(area, "ts"):
+			updated_area["ts"] = safe_str_key(area, "ts")
+		if second_try_used:
+			append_signal_note(updated_area, "(second try)")
+		if reason == "valid_with_prose":
+			logger.log(f"Accepted JSON for {label} after stripping wrapper prose")
+			append_signal_note(updated_area, "(prose stripped)")
+		log_json_response(logger, f"Processed area JSON [{label}]", pretty_json(serialize_area_for_llm(updated_area)))
+		return SignalJobResult(key=area_key, area=updated_area, reason=reason, ok=True)
+
+	area_signal = run_hermes(prompt, model, provider, logger, label, session, f"Raw area response [{label}]")
+	updated_area = hydrate_boundary_area(area)
+	updated_area["signal"] = area_signal
+	return SignalJobResult(key=area_key, area=updated_area, reason="valid", ok=True)
+
+
+def build_area_signal_tasks(runtime: CompassContext) -> list[AreaSignalTask]:
+	area_meta = runtime.get("area_meta", {}) if isinstance(runtime.get("area_meta"), dict) else {}
+	tasks: list[AreaSignalTask] = []
+	for index, area in enumerate(runtime.get("areas", [])):
+		if not isinstance(area, dict):
+			continue
+		key = safe_str_key(area, "key")
+		meta = area_meta.get(key, {}) if isinstance(area_meta.get(key, {}), dict) else {}
+		area_prompt = str(meta.get("area_prompt", "")).strip()
+		if not area_prompt:
+			continue
+		area_copy = hydrate_boundary_area(area)
+		area_payload = serialize_area_for_llm(area_copy)
+		prompt = build_area_signal_prompt(area_prompt, area_payload)
+		label = f"area:{key or 'unknown'}"
+		tasks.append(
+			AreaSignalTask(
+				index=index,
+				key=key,
+				label=label,
+				area=area_copy,
+				area_prompt=area_prompt,
+				prompt=prompt,
+			)
+		)
+	return tasks
+
+
+def prepare_area_signal_tasks(runtime: CompassContext) -> list[AreaSignalTask]:
+	"""Prepare phase-3 area signal queue from current runtime state."""
+	return build_area_signal_tasks(runtime)
+
+
+def execute_area_signal_task(task: AreaSignalTask, context: AreaSignalExecutionContext) -> SignalJobResult:
+	"""Execute one area signal task using shared execution context."""
+	return run_area_signal_job(task, context.model, context.provider, context.logger, context.session)
+
+
+def run_area_signal_batch(
+	runtime: CompassContext,
+	logger: TraceLogger,
+	model: str,
+	provider: str,
+	session: HermesSessionState,
+) -> None:
+	tasks = prepare_area_signal_tasks(runtime)
+	if not tasks:
+		return
+
+	context = AreaSignalExecutionContext(model=model, provider=provider, logger=logger, session=session)
+	processed = 0
+	failed = 0
+	logger.log(f"Phase 3 area signal queue prepared: {len(tasks)} prompt(s)")
+	for task in tasks:
+		result = execute_area_signal_task(task, context)
+		if not result.ok or not result.area:
+			failed += 1
+			logger.log(f"Phase 3 area signal failed: {task.label} ({result.reason})")
+			continue
+		runtime["areas"][task.index] = result.area
+		processed += 1
+	logger.log(f"Phase 3 area signal complete: processed={processed}, failed={failed}")
 
 
 def should_retry_area_signal(reason: str, response_payload: AreaContext | None) -> bool:
@@ -547,67 +798,20 @@ def append_signal_note(area: BoundaryAreaContext, note: str) -> None:
 		area["signal"] = note_clean
 
 
-def enrich_runtime(runtime: CompassContext, logger: TraceLogger) -> None:
+def enrich_runtime(runtime: CompassContext, logger: TraceLogger, session: HermesSessionState) -> None:
 	model, provider = load_job_model_provider("Daily Compass", logger)
-	area_meta = runtime.get("area_meta", {}) if isinstance(runtime.get("area_meta"), dict) else {}
-	for area in runtime["areas"]:
-		key = safe_str_key(area, "key")
-		meta = area_meta.get(key, {}) if isinstance(area_meta.get(key, {}), dict) else {}
-		area_prompt = str(meta.get("area_prompt", ""))
-		if area_prompt:
-			area_payload = serialize_area_for_llm(area)
-			prompt = build_area_signal_prompt(area_prompt, area_payload)
-			label = f"area:{area.get('key','unknown')}"
-			if area_prompt_requests_json(area_prompt):
-				response_text = run_hermes_raw(prompt, model, provider, logger, label)
-				log_text_block(logger, f"Raw area response [{label}]", response_text)
-				response_payload, reason = validate_json_response_strict(response_text, safe_str_key(area, "key"))
-				second_try_used = False
-				if should_retry_area_signal(reason, response_payload):
-					logger.log(f"Invalid area signal JSON for {label}: {reason}; starting second try")
-					logger.blank_line()
-					logger.log(f"Retrying area signal for {label} due to {reason}")
-					retry_delta = (
-						f"Second try: previous response failed validation with reason '{reason}'. "
-						"Return exactly one JSON object only."
-					)
-					log_text_block(logger, f"Retry prompt delta [{label}:second_try]", retry_delta)
-					retry_prompt = (
-						f"{prompt}\n\n" + retry_delta
-					)
-					response_text = run_hermes_raw(retry_prompt, model, provider, logger, f"{label}:second_try")
-					log_text_block(logger, f"Raw area response [{label}:second_try]", response_text)
-					response_payload, reason = validate_json_response_strict(response_text, safe_str_key(area, "key"))
-					second_try_used = True
-				if not response_payload:
-					logger.log(f"Invalid area signal JSON for {label}; reason={reason}")
-					area["signal"] = f"[ERR: invalid area signal JSON ({reason})]"
-					log_text_block(
-						logger,
-						f"Processed area JSON [{label}]",
-						pretty_json({"ok": False, "reason": reason, "key": safe_str_key(area, "key")}),
-					)
-					continue
-				updated_area = merge_area_signal_response(area, response_payload)
-				if not safe_str_key(updated_area, "ts") and safe_str_key(area, "ts"):
-					updated_area["ts"] = safe_str_key(area, "ts")
-				if second_try_used:
-					append_signal_note(updated_area, "(second try)")
-				if reason == "valid_with_prose":
-					logger.log(f"Accepted JSON for {label} after stripping wrapper prose")
-					append_signal_note(updated_area, "(prose stripped)")
-				log_json_response(logger, f"Processed area JSON [{label}]", pretty_json(serialize_area_for_llm(updated_area)))
-				area.clear()
-				area.update(updated_area)
-				continue
-			area["signal"] = run_hermes(prompt, model, provider, logger, label, f"Raw area response [{label}]")
+	if session.mode == "oneshot":
+		logger.log("Phase 3 session mode: oneshot (no shared chat context between prompts)")
+	else:
+		logger.log("Phase 3 session mode: chat (shared context across area and compass prompts)")
+	run_area_signal_batch(runtime, logger, model, provider, session)
 
 	compass_prompt = runtime.get("signal_prompt", DEFAULT_COMPASS_PROMPT)
 	areas_context = []
 	for area in runtime["areas"]:
 		areas_context.append(serialize_area_for_llm(area))
 	prompt = build_compass_signal_prompt(compass_prompt, areas_context)
-	runtime["signal"] = run_hermes(prompt, model, provider, logger, "compass", "Raw compass response [compass]")
+	runtime["signal"] = run_hermes(prompt, model, provider, logger, "compass", session, "Raw compass response [compass]")
 
 
 def build_runtime(areas: list[AreaConfig], skill_index: dict[str, Path], logger: TraceLogger) -> CompassContext:
@@ -643,7 +847,11 @@ def build_runtime(areas: list[AreaConfig], skill_index: dict[str, Path], logger:
 	if jobs:
 		with ThreadPoolExecutor(max_workers=min(4, len(jobs))) as ex:
 			futures = {
-				ex.submit(run_boundary_script, area.key, script, 60, os.environ.copy()): (area, area_prompt, script_s)
+				ex.submit(run_boundary_script, area.key, script, BOUNDARY_SCRIPT_TIMEOUT, {
+					**os.environ.copy(),
+					"DAILY_COMPASS_RUN_ID": logger.path.stem,
+					"DAILY_COMPASS_AREA_KEY": area.key,
+				}): (area, area_prompt, script_s)
 				for (area, script, area_prompt, script_s) in jobs
 			}
 			for fut in as_completed(futures):
@@ -651,10 +859,16 @@ def build_runtime(areas: list[AreaConfig], skill_index: dict[str, Path], logger:
 				result = fut.result()
 				runtime["area_meta"][area.key] = {"script_to_run": script_s, "area_prompt": area_prompt}
 				logger.log(f"Run boundary: {area.key} -> {script_s}")
+				logger.log(f"Area log: {LOGS_DIR / f'{logger.path.stem}.{area.key}.log'}")
 				if not result.ok:
 					runtime["areas"].append(build_error_area(area, result.stderr or "boundary_failed"))
 					continue
-				runtime["areas"].append(hydrate_boundary_area(result.payload))
+				boundary_area = hydrate_boundary_area(result.payload)
+				# Boundary scripts return minimal payload; metadata comes from YAML area config.
+				boundary_area["name"] = area.name
+				boundary_area["key"] = area.key
+				boundary_area["dimension"] = choose_primary_dimension(area.dimensions)
+				runtime["areas"].append(boundary_area)
 
 	runtime["areas"].sort(key=lambda a: a["name"].lower())
 	return runtime
@@ -821,6 +1035,12 @@ def parse_args() -> argparse.Namespace:
 	p.add_argument("areas", nargs="*", help="Optional area keys, e.g. weather news")
 	p.add_argument("--verbose", action="store_true", help="Print trace to stdout")
 	p.add_argument("--fast", action="store_true", help="Skip signal phase")
+	p.add_argument(
+		"--session-mode",
+		choices=["chat", "oneshot"],
+		default="chat",
+		help="Hermes invocation mode: chat reuses one session during this run",
+	)
 	return p.parse_args()
 
 
@@ -833,6 +1053,19 @@ def main() -> int:
 		sys.stdout = TeeStream(orig_stdout, logger)
 		sys.stderr = TeeStream(orig_stderr, logger)
 	logger.log("daily-compass start")
+	session = HermesSessionState(
+		mode=args.session_mode,
+		hermes_argv=resolve_hermes_argv(),
+		chat_argv=resolve_chat_argv(),
+	)
+	if session.mode == "chat":
+		logger.log("Hermes session mode: chat (single session for this run)")
+	else:
+		logger.log("Hermes session mode: oneshot")
+	if not session.hermes_argv:
+		logger.log("Hermes binary resolution failed")
+	if session.mode == "chat" and not session.chat_argv and not session.hermes_argv:
+		logger.log("Hermes chat command resolution failed")
 
 	def log_phase(title: str) -> None:
 		if args.verbose:
@@ -884,7 +1117,7 @@ def main() -> int:
 			log_block("Skipped in fast mode: Phase 3 runs hermes requests and JSON processing only in compass-run.\n")
 		else:
 			logger.log("phase 3 signal requests start")
-			enrich_runtime(runtime, logger)
+			enrich_runtime(runtime, logger, session)
 			validate_runtime_or_raise(runtime)
 
 		log_phase(PHASE_RENDER)

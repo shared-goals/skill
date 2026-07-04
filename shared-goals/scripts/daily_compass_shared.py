@@ -4,15 +4,21 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
+import importlib.util
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TypedDict
 
 
 VALID_DIMENSIONS = {"faith", "will", "feeling", "mind"}
+
+BOUNDARY_SCRIPT_TIMEOUT = 180
 
 ACTION_VERBS = {
 	"add",
@@ -58,6 +64,144 @@ COMMON_JSON_CONTRACT_PHRASES = [
 	"line facts",
 ]
 
+HERMES_AGENT_DIR = Path.home() / ".hermes" / "hermes-agent"
+HERMES_CLI_PY = HERMES_AGENT_DIR / "cli.py"
+HERMES_VENV_PY = HERMES_AGENT_DIR / "venv" / "bin" / "python"
+SHARED_GOALS_DIR = Path.home() / ".hermes" / "skills" / "shared-goals" / "shared-goals"
+SHARED_GOALS_LOGS_DIR = SHARED_GOALS_DIR / "logs"
+
+
+def load_env_file(env_path: Path | None = None) -> None:
+	"""Load KEY=VALUE pairs from a .env file into os.environ when missing."""
+	import os
+
+	path = env_path or (Path.home() / ".hermes" / ".env")
+	if not path.exists():
+		return
+
+	try:
+		for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+			line = raw.strip()
+			if not line or line.startswith("#") or "=" not in line:
+				continue
+			key, value = line.split("=", 1)
+			key = key.strip()
+			value = value.strip().strip('"').strip("'")
+			if key and key not in os.environ:
+				os.environ[key] = value
+	except OSError:
+		return
+
+
+def resolve_hermes_argv() -> list[str]:
+	"""Resolve hermes command argv with PATH and module fallback."""
+	env_bin = os.environ.get("HERMES_BIN", "").strip()
+	if env_bin:
+		if any(sep in env_bin for sep in ("/", "\\")):
+			return [str(Path(env_bin).expanduser())]
+		resolved_env = shutil.which(env_bin)
+		if resolved_env:
+			return [resolved_env]
+
+	hermes_bin = shutil.which("hermes")
+	if hermes_bin:
+		return [hermes_bin]
+
+	if importlib.util.find_spec("hermes_cli") is not None:
+		return [sys.executable, "-m", "hermes_cli.main"]
+
+	return []
+
+
+def resolve_non_tui_cli_argv() -> list[str]:
+	"""Resolve non-TUI CLI entrypoint for scripted query/chat calls."""
+	if HERMES_CLI_PY.exists() and HERMES_VENV_PY.exists():
+		return [str(HERMES_VENV_PY), str(HERMES_CLI_PY)]
+	if HERMES_CLI_PY.exists():
+		return [sys.executable, str(HERMES_CLI_PY)]
+	return []
+
+
+def build_hermes_query_cmd(prompt: str) -> list[str]:
+	"""Build robust query command that avoids TUI wrappers when available."""
+	cli_argv = resolve_non_tui_cli_argv()
+	if cli_argv:
+		return [*cli_argv, "--query", prompt, "--quiet"]
+	hermes_argv = resolve_hermes_argv()
+	if hermes_argv:
+		return [*hermes_argv, "-z", prompt]
+	return []
+
+
+def sanitize_hermes_output(text: str) -> str:
+	"""Strip known non-semantic CLI prefixes from scripted output."""
+	lines = (text or "").splitlines()
+	while lines and lines[0].startswith("Warning: Unknown toolsets:"):
+		lines.pop(0)
+	while lines and not lines[0].strip():
+		lines.pop(0)
+	return "\n".join(lines).strip()
+
+
+def resolve_shared_goals_logs_dir() -> Path:
+	"""Return shared-goals logs directory, creating it when needed."""
+	SHARED_GOALS_LOGS_DIR.mkdir(parents=True, exist_ok=True)
+	return SHARED_GOALS_LOGS_DIR
+
+
+def resolve_area_log_path(area_key: str, run_id: str | None = None) -> Path:
+	"""Return per-area log path in shared-goals logs directory."""
+	safe_area = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(area_key or "area").strip()) or "area"
+	run = str(run_id or os.environ.get("DAILY_COMPASS_RUN_ID", "")).strip()
+	if not run:
+		run = datetime.now().strftime("%Y%m%d-%H%M%S")
+		# Reuse one process-local run id when area scripts run standalone.
+		os.environ["DAILY_COMPASS_RUN_ID"] = run
+	return resolve_shared_goals_logs_dir() / f"{run}.{safe_area}.log"
+
+
+def append_area_log_line(area_key: str, message: str, level: str = "INFO", run_id: str | None = None) -> Path:
+	"""Append one timestamped line to a per-area log file and return its path."""
+	path = resolve_area_log_path(area_key, run_id=run_id)
+	stamp = datetime.now().isoformat(timespec="seconds")
+	entry = f"[{stamp}] [{str(level or 'INFO').upper()}] {str(message or '').strip()}\n"
+	with path.open("a", encoding="utf-8") as fh:
+		fh.write(entry)
+	return path
+
+
+def now_iso_utc() -> str:
+	"""Return current UTC timestamp in ISO-8601 format."""
+	return datetime.now(timezone.utc).isoformat()
+
+
+def make_line_context(title: str, url: str = "", body: str = "", signal: str = "") -> dict[str, str]:
+	"""Create a strict LineContext dict."""
+	return {
+		"title": str(title),
+		"url": str(url),
+		"body": str(body),
+		"signal": str(signal),
+	}
+
+
+def make_boundary_payload(
+	*,
+	status: str,
+	reason: str,
+	lines: list[dict[str, str]] | None = None,
+	include_ts: bool = False,
+) -> dict[str, Any]:
+	"""Create a minimal boundary payload with only status, reason, lines, and optional ts."""
+	payload: dict[str, Any] = {
+		"status": status,
+		"reason": reason,
+		"lines": lines or [],
+	}
+	if include_ts:
+		payload["ts"] = now_iso_utc()
+	return payload
+
 
 def build_numbered_lines(lines: list[str], start: int = 1) -> str:
 	out: list[str] = []
@@ -72,6 +216,41 @@ def area_context_definition_text() -> str:
 		"LineContext = { title: string, url: string, body: string, signal: string }\n\n"
 		"AreaContext definition:\n"
 		"AreaContext = { name: string, key: string, dimension: string, signal: string, lines: LineContext[] }\n"
+	)
+
+
+@dataclass
+class SubprocessTextResult:
+	returncode: int
+	stdout: str
+	stderr: str
+	timed_out: bool = False
+	launch_error: bool = False
+
+
+def run_subprocess_text(
+	argv: list[str], *, timeout: int, env: dict[str, str] | None = None
+) -> SubprocessTextResult:
+	"""Run a subprocess and return normalized text outputs and status."""
+	try:
+		proc = subprocess.run(
+			argv,
+			capture_output=True,
+			text=True,
+			timeout=timeout,
+			env=env,
+		)
+	except subprocess.TimeoutExpired:
+		return SubprocessTextResult(returncode=124, stdout="", stderr="", timed_out=True, launch_error=False)
+	except OSError as exc:
+		return SubprocessTextResult(returncode=127, stdout="", stderr=str(exc), timed_out=False, launch_error=True)
+
+	return SubprocessTextResult(
+		returncode=proc.returncode,
+		stdout=proc.stdout or "",
+		stderr=proc.stderr or "",
+		timed_out=False,
+		launch_error=False,
 	)
 
 @dataclass
@@ -295,101 +474,78 @@ def is_valid_area_context(payload: dict[str, Any], expected_key: str = "") -> bo
 	return True
 
 
-def is_valid_boundary_area_context(payload: dict[str, Any], expected_key: str = "") -> bool:
-	if set(payload.keys()) != {"name", "key", "dimension", "status", "reason", "signal", "lines"}:
-		return False
+def validate_boundary_payload(
+	payload: dict[str, Any], *, allow_ts: bool = True, allow_signal: bool = True
+) -> tuple[bool, str]:
+	"""Validate minimal boundary payload and return (ok, reason)."""
+	allowed_keys = {"status", "reason", "lines"}
+	if allow_signal:
+		allowed_keys.add("signal")
+	if allow_ts:
+		allowed_keys.add("ts")
 
-	if not is_valid_area_context(
-		{
-			"name": payload.get("name", ""),
-			"key": payload.get("key", ""),
-			"dimension": payload.get("dimension", ""),
-			"signal": payload.get("signal", ""),
-			"lines": payload.get("lines", []),
-		},
-		expected_key,
-	):
-		return False
-
-	status = str(payload.get("status", "")).strip()
-	reason = payload.get("reason")
-	if status not in {"ok", "TBD", "error"}:
-		return False
-	if not isinstance(reason, str):
-		return False
-	return True
-
-
-def is_valid_boundary_area_payload(payload: dict[str, Any], expected_key: str = "") -> bool:
-	allowed_keys = {"name", "key", "dimension", "status", "reason", "signal", "lines", "ts"}
 	if not set(payload.keys()).issubset(allowed_keys):
-		return False
-	for required in ("name", "key", "dimension", "status", "reason", "lines"):
-		if required not in payload:
-			return False
+		return False, "extra_keys"
 
-	key = str(payload.get("key", "")).strip()
-	name = str(payload.get("name", "")).strip()
-	dimension = str(payload.get("dimension", "")).strip()
+	for required in ("status", "reason", "lines"):
+		if required not in payload:
+			return False, f"missing_{required}"
+
 	status = str(payload.get("status", "")).strip()
 	reason = payload.get("reason")
 	lines = payload.get("lines")
 
-	if expected_key and key != expected_key:
-		return False
-	if not key:
-		return False
-	if not name:
-		return False
-	if dimension not in VALID_DIMENSIONS:
-		return False
 	if status not in {"ok", "TBD", "error"}:
-		return False
+		return False, "invalid_status"
 	if not isinstance(reason, str):
-		return False
+		return False, "invalid_reason"
 	if not isinstance(lines, list):
-		return False
+		return False, "invalid_lines"
 
 	for line in lines:
 		if not isinstance(line, dict):
-			return False
-		title = str(line.get("title", "")).strip()
-		if not title:
-			return False
-		for optional_key in ("url", "body", "signal"):
-			if optional_key in line and not isinstance(line.get(optional_key), str):
-				return False
+			return False, "line_not_dict"
+		if not is_valid_line_context(line):
+			return False, "invalid_line_context"
+
 	if "ts" in payload and not isinstance(payload.get("ts"), str):
-		return False
+		return False, "invalid_ts"
 	if "signal" in payload and not isinstance(payload.get("signal"), str):
-		return False
-	return True
+		return False, "invalid_signal"
+
+	return True, "valid"
+
+
+def is_valid_boundary_area_context(payload: dict[str, Any], expected_key: str = "") -> bool:
+	ok, _reason = validate_boundary_payload(payload, allow_ts=False, allow_signal=True)
+	return ok
+
+
+def is_valid_boundary_area_payload(payload: dict[str, Any], expected_key: str = "") -> bool:
+	ok, _reason = validate_boundary_payload(payload, allow_ts=True, allow_signal=True)
+	return ok
 
 
 def run_boundary_script(area_key: str, script: Path, timeout: int = 60, env: dict[str, str] | None = None) -> BoundaryExecResult:
-	try:
-		proc = subprocess.run(
-			[sys.executable, str(script)],
-			capture_output=True,
-			text=True,
-			timeout=timeout,
-			env=env,
-		)
-	except subprocess.TimeoutExpired:
+	result = run_subprocess_text([sys.executable, str(script)], timeout=timeout, env=env)
+	if result.timed_out:
 		return BoundaryExecResult(ok=False, returncode=124, stdout="", stderr="boundary_timeout", payload={}, timed_out=True)
+	if result.launch_error:
+		reason = (result.stderr or "boundary_exec_failed").strip()[:400]
+		return BoundaryExecResult(ok=False, returncode=result.returncode, stdout="", stderr=reason or "boundary_exec_failed", payload={})
 
-	if proc.returncode != 0:
-		reason = (proc.stderr or "boundary_exec_failed").strip()[:400]
-		return BoundaryExecResult(ok=False, returncode=proc.returncode, stdout=proc.stdout or "", stderr=reason or "boundary_exec_failed", payload={})
+	if result.returncode != 0:
+		reason = (result.stderr or "boundary_exec_failed").strip()[:400]
+		return BoundaryExecResult(ok=False, returncode=result.returncode, stdout=result.stdout, stderr=reason or "boundary_exec_failed", payload={})
 
-	payload = parse_json_object(proc.stdout or "")
+	payload = parse_json_object(result.stdout)
 	if not payload:
-		return BoundaryExecResult(ok=False, returncode=proc.returncode, stdout=proc.stdout or "", stderr="boundary_non_json", payload={})
+		return BoundaryExecResult(ok=False, returncode=result.returncode, stdout=result.stdout, stderr="boundary_non_json", payload={})
 
 	if not is_valid_boundary_area_payload(payload, area_key):
-		return BoundaryExecResult(ok=False, returncode=proc.returncode, stdout=proc.stdout or "", stderr="boundary_schema_invalid", payload=payload)
+		return BoundaryExecResult(ok=False, returncode=result.returncode, stdout=result.stdout, stderr="boundary_schema_invalid", payload=payload)
 
-	return BoundaryExecResult(ok=True, returncode=proc.returncode, stdout=proc.stdout or "", stderr=proc.stderr or "", payload=payload)
+	return BoundaryExecResult(ok=True, returncode=result.returncode, stdout=result.stdout, stderr=result.stderr, payload=payload)
 
 
 # Output and serialization helpers

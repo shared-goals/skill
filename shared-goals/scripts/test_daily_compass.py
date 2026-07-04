@@ -7,6 +7,7 @@ import importlib.util
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -25,6 +26,182 @@ spec.loader.exec_module(module)  # type: ignore[attr-defined]
 
 
 class DailyCompassPureTests(unittest.TestCase):
+    def test_enrich_runtime_runs_area_batch_before_compass_with_shared_session(self) -> None:
+        runtime = {
+            "signal_prompt": "Compass prompt",
+            "signal": "",
+            "dimensions": ["mind"],
+            "areas": [
+                {
+                    "name": "News",
+                    "key": "news",
+                    "dimension": "mind",
+                    "status": "ok",
+                    "reason": "",
+                    "signal": "",
+                    "lines": [{"title": "HN", "url": "", "body": "item", "signal": ""}],
+                }
+            ],
+            "area_meta": {"news": {"area_prompt": "Signal news."}},
+        }
+        logger = module.TraceLogger(verbose=False)
+        session = module.HermesSessionState(mode="chat", hermes_argv=["hermes"], chat_argv=["cli.py"])
+        calls: list[tuple[str, object]] = []
+
+        def fake_batch(rt, _logger, _model, _provider, passed_session):
+            calls.append(("batch", passed_session))
+            rt["areas"][0]["signal"] = "area-done"
+
+        def fake_run_hermes(_prompt, _model, _provider, _logger, label, passed_session, _raw_label=None):
+            calls.append((label, passed_session))
+            return "compass-done"
+
+        try:
+            with mock.patch.object(module, "load_job_model_provider", return_value=("", "")), mock.patch.object(
+                module, "run_area_signal_batch", side_effect=fake_batch
+            ), mock.patch.object(module, "run_hermes", side_effect=fake_run_hermes):
+                module.enrich_runtime(runtime, logger, session)
+        finally:
+            if hasattr(logger, "_fh") and not logger._fh.closed:
+                logger._fh.close()
+
+        self.assertEqual([c[0] for c in calls], ["batch", "compass"])
+        self.assertIs(calls[0][1], session)
+        self.assertIs(calls[1][1], session)
+        self.assertEqual(runtime["areas"][0]["signal"], "area-done")
+        self.assertEqual(runtime["signal"], "compass-done")
+
+    def test_build_area_signal_tasks_preserves_runtime_order(self) -> None:
+        runtime = {
+            "areas": [
+                {
+                    "name": "Weather",
+                    "key": "weather",
+                    "dimension": "feeling",
+                    "status": "ok",
+                    "reason": "",
+                    "signal": "",
+                    "lines": [{"title": "SPb", "url": "", "body": "rain", "signal": ""}],
+                },
+                {
+                    "name": "News",
+                    "key": "news",
+                    "dimension": "mind",
+                    "status": "ok",
+                    "reason": "",
+                    "signal": "",
+                    "lines": [{"title": "HN", "url": "", "body": "item", "signal": ""}],
+                },
+            ],
+            "area_meta": {
+                "weather": {"area_prompt": "Signal weather."},
+                "news": {"area_prompt": "Signal news."},
+            },
+        }
+        tasks = module.prepare_area_signal_tasks(runtime)
+        self.assertEqual([t.key for t in tasks], ["weather", "news"])
+        self.assertEqual([t.index for t in tasks], [0, 1])
+
+    def test_run_area_signal_batch_executes_tasks_sequentially(self) -> None:
+        runtime = {
+            "areas": [
+                {
+                    "name": "News",
+                    "key": "news",
+                    "dimension": "mind",
+                    "status": "ok",
+                    "reason": "",
+                    "signal": "",
+                    "lines": [{"title": "HN", "url": "", "body": "item", "signal": ""}],
+                },
+                {
+                    "name": "Weather",
+                    "key": "weather",
+                    "dimension": "feeling",
+                    "status": "ok",
+                    "reason": "",
+                    "signal": "",
+                    "lines": [{"title": "SPb", "url": "", "body": "rain", "signal": ""}],
+                },
+            ],
+            "area_meta": {},
+        }
+
+        tasks = [
+            module.AreaSignalTask(
+                index=0,
+                key="news",
+                label="area:news",
+                area=module.hydrate_boundary_area(runtime["areas"][0]),
+                area_prompt="Signal news.",
+                prompt="GOAL:\nNews",
+            ),
+            module.AreaSignalTask(
+                index=1,
+                key="weather",
+                label="area:weather",
+                area=module.hydrate_boundary_area(runtime["areas"][1]),
+                area_prompt="Signal weather.",
+                prompt="GOAL:\nWeather",
+            ),
+        ]
+
+        called: list[str] = []
+
+        def fake_execute(task, _context):
+            called.append(task.key)
+            updated = module.hydrate_boundary_area(task.area)
+            updated["signal"] = f"{task.key}-done"
+            return module.SignalJobResult(key=task.key, area=updated, reason="valid", ok=True)
+
+        logger = module.TraceLogger(verbose=False)
+        session = module.HermesSessionState(mode="chat", hermes_argv=["hermes"], chat_argv=["cli.py"])
+        try:
+            with mock.patch.object(module, "prepare_area_signal_tasks", return_value=tasks), mock.patch.object(
+                module, "execute_area_signal_task", side_effect=fake_execute
+            ):
+                module.run_area_signal_batch(runtime, logger, "", "", session)
+        finally:
+            if hasattr(logger, "_fh") and not logger._fh.closed:
+                logger._fh.close()
+
+        self.assertEqual(called, ["news", "weather"])
+        self.assertEqual(runtime["areas"][0]["signal"], "news-done")
+        self.assertEqual(runtime["areas"][1]["signal"], "weather-done")
+
+    def test_build_area_signal_tasks_includes_only_prompted_areas(self) -> None:
+        runtime = {
+            "areas": [
+                {
+                    "name": "News",
+                    "key": "news",
+                    "dimension": "mind",
+                    "status": "ok",
+                    "reason": "",
+                    "signal": "",
+                    "lines": [{"title": "HN", "url": "", "body": "item", "signal": ""}],
+                },
+                {
+                    "name": "Weather",
+                    "key": "weather",
+                    "dimension": "feeling",
+                    "status": "ok",
+                    "reason": "",
+                    "signal": "",
+                    "lines": [{"title": "Samara", "url": "", "body": "rain", "signal": ""}],
+                },
+            ],
+            "area_meta": {
+                "news": {"area_prompt": "Summarize as JSON."},
+                "weather": {"area_prompt": ""},
+            },
+        }
+        tasks = module.build_area_signal_tasks(runtime)
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks[0].key, "news")
+        self.assertEqual(tasks[0].index, 0)
+        self.assertTrue(tasks[0].prompt.startswith("GOAL:"))
+
     def test_choose_primary_dimension(self) -> None:
         self.assertEqual(module.choose_primary_dimension(["mind", "faith"]), "mind")
         self.assertEqual(module.choose_primary_dimension(["unknown", "will"]), "will")
@@ -150,15 +327,26 @@ Ignore.
 
     def test_boundary_area_context_validation_accepts_metadata(self) -> None:
         payload = {
-            "name": "Weather",
-            "key": "weather",
-            "dimension": "feeling",
             "status": "ok",
             "reason": "",
             "signal": "ok",
             "lines": [{"title": "Samara", "url": "", "body": "", "signal": ""}],
         }
         self.assertTrue(shared.is_valid_boundary_area_context(payload, "weather"))
+
+    def test_boundary_area_context_validation_accepts_empty_signals(self) -> None:
+        payload = {
+            "status": "ok",
+            "reason": "",
+            "signal": "",
+            "lines": [
+                {"title": "Samara", "url": "", "body": "Clear", "signal": ""},
+                {"title": "Humidity", "url": "", "body": "40%", "signal": ""},
+            ],
+        }
+        self.assertTrue(shared.is_valid_boundary_area_context(payload, "weather"))
+        self.assertEqual(payload["signal"], "")
+        self.assertTrue(all(line["signal"] == "" for line in payload["lines"]))
 
     def test_project_boundary_to_area_context_drops_metadata(self) -> None:
         payload = {

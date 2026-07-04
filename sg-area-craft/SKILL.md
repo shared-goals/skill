@@ -161,6 +161,9 @@ Use this map directly from area-test output.
 - `boundary_line_context_schema` fail:
   - Ensure every line has string `title`, `url`, `body`, `signal`.
 
+- `boundary_line_signals_empty` fail:
+  - Boundary scripts must emit `signal=""` on every LineContext. The LLM signal step fills signals, never the script. If `hermes -z` or any internal call returns a `signal` field, discard it and use empty string.
+
 - `area_signal_guidance_enumerated` fail:
   - Rewrite `## Area signal` into sequential `1..N` lines.
 
@@ -189,6 +192,8 @@ Use this when guidance needs reset:
 ```
 
 ## Boundary script template (safe default)
+
+Import `BOUNDARY_SCRIPT_TIMEOUT` from `daily_compass_shared` for any timeout values. Never hardcode seconds.
 
 ```python
 payload = {
@@ -251,6 +256,19 @@ When done, output exactly these sections:
 4. `Validation`: final output summary of `make area-test <area>` and `make compass-fast-run <area>`.
 5. `Residual risk`: one line, or `none`.
 
+## Boundary script error output
+
+When a boundary script cannot fetch data (IMAP timeout, missing credentials, API error), put the **raw error message** in LineContext `body`. Do not wrap it in "Error is Ok: ..." or similar softening — the LLM signal step and the user need to see what actually failed.
+
+## Boundary scripts with hermes -z
+
+Boundary scripts may call `hermes -z` for LLM-powered recall (hindsight_reflect, session_search, SOUL.md reading). When doing so:
+
+- Use `BOUNDARY_SCRIPT_TIMEOUT` from `daily_compass_shared` as the outer subprocess timeout.
+- Use `BOUNDARY_SCRIPT_TIMEOUT - 20` for the inner `hermes -z` call to leave margin for other operations (billing, HTTP fetches, JSON output).
+- Parse the `hermes -z` stdout for JSON via `parse_json_object`.
+- On timeout or error, return a LineContext with the raw error message in `body` and empty `signal`.
+
 ## Guardrails
 
 1. Prefer smallest edit set that makes checks pass.
@@ -258,6 +276,35 @@ When done, output exactly these sections:
 3. Keep boundary scripts deterministic, compact, and data-focused.
 4. Keep guidance concrete and operational, not philosophical.
 5. Do not skip validation.
+6. Use `BOUNDARY_SCRIPT_TIMEOUT` from `daily_compass_shared` — never hardcode timeout values in area scripts, daily-compass, or area-test.
+6. Do not skip validation.
+
+## Pitfall: `status: debug` in area YAML fails area-test
+
+AGENTS.md mentions `status: debug` as a debug-mode convention, but `area-test.py` only accepts `active` or `TBD` for the `yaml_status` check. Use `status: TBD` for areas under development — it passes the validator while signalling "not yet active". The debug-mode convention from AGENTS.md applies to which areas the Daily Compass runtime includes, not to the area-test validator.
+
+## Pitfall: stdlib-only boundary scripts
+
+Boundary scripts run in the Hermes venv where external packages may not be installed. Prefer stdlib modules (`urllib.request`, `imaplib`, `xml.etree.ElementTree`, `email`, `json`, `re`) over third-party libraries (`caldav`, `icalendar`, `requests`). This avoids `ModuleNotFoundError` crashes and keeps boundary scripts self-contained. If a protocol requires complex parsing (e.g. iCal, MIME), regex + stdlib parsing is usually sufficient for a read-only daily status fetch.
+
+## Pitfall: `hermes -z` in boundary scripts
+
+When a boundary script calls `hermes -z` (e.g. for hindsight recall or SOUL reflection):
+
+- **Shared timeout constant.** `BOUNDARY_SCRIPT_TIMEOUT` in `daily_compass_shared.py` is the single source of truth. Both `area-test.py` and `daily-compass.py` pass it to `run_boundary_script()`. No hardcoded timeout values anywhere.
+- **Internal `hermes -z` timeout must be less.** Use `BOUNDARY_SCRIPT_TIMEOUT - 20` to leave margin for other fetches (billing APIs, etc.) and JSON serialization. If the script only calls `hermes -z` and nothing else, a smaller margin is fine.
+- **Signals must be empty.** Boundary scripts must always emit `signal=""` on every LineContext. The LLM signal step (Area signal guidance) fills signals — never the script. If `hermes -z` returns a `signal` field, discard it.
+- **Graceful degradation is mandatory.** On timeout or error, return a valid LineContext with `body` set to the raw error message (not wrapped in "Error is Ok") and empty `signal`. The script must always exit 0 with valid JSON.
+- **Parse JSON from stdout.** `hermes -z` output may contain prose around the JSON. Use `parse_json_object()` from `daily_compass_shared` to extract the JSON payload.
+- **Cost and latency.** Each `hermes -z` call starts a full Hermes session. In Daily Compass, boundary scripts run in parallel (max 4 workers), so multiple `hermes -z` calls can run concurrently.
+
+## Pitfall: Cron delivery truncates output at 4000 chars
+
+Hermes cron auto-delivery has a hardcoded `MAX_PLATFORM_OUTPUT = 4000` in `gateway/delivery.py` that truncates output **before** it reaches Telegram's own 4096 limit. Full output is saved to `~/.hermes/cron/output/<job_id>_<timestamp>.txt`. The `send_message` tool has proper chunking (splits into multiple messages) but cron auto-delivery does not use it.
+
+When compass output appears truncated in Telegram: check the log file first (`shared-goals/logs/<date>-<time>.log`) — if full content is there, the truncation is in cron delivery, not in the compass script.
+
+See `references/cron-delivery-truncation.md` for constant locations, debugging path, and workaround options.
 
 ## Stop conditions
 

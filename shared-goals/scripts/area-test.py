@@ -27,6 +27,7 @@ if str(SHARED_GOALS_SCRIPTS_DIR) not in sys.path:
 
 from daily_compass_shared import (
 	ACTION_VERBS,
+	BOUNDARY_SCRIPT_TIMEOUT,
 	COMMON_JSON_CONTRACT_PHRASES,
 	VALID_DIMENSIONS,
 	extract_section,
@@ -34,7 +35,6 @@ from daily_compass_shared import (
 	is_valid_area_context,
 	is_valid_boundary_area_context,
 	is_valid_line_context,
-	project_boundary_to_area_context,
 	parse_inline_list,
 	parse_top_level_yaml,
 	run_boundary_script,
@@ -174,30 +174,18 @@ def run_runtime_preflight_tests() -> tuple[bool, str]:
 
 	combined = "\n".join([proc.stdout or "", proc.stderr or ""])
 	lines = [ln.strip() for ln in combined.splitlines() if ln.strip()]
-	test_rows = [ln for ln in lines if ln.startswith("test_") and " ... " in ln]
-	test_names = [ln.split(" ... ", 1)[0] for ln in test_rows]
 	ran_line = next((ln for ln in lines if ln.startswith("Ran ")), "")
 	ok_line = next((ln for ln in reversed(lines) if ln == "OK"), "OK")
-	if test_names:
-		return True, f"{ran_line or 'Ran tests'}; {ok_line}; tests: {', '.join(test_names)}"
 	if ran_line:
 		return True, f"{ran_line}; {ok_line}"
 	return True, "runtime tests passed"
 
 
-def collect_area_test_checks(area_key: str) -> list[CheckResult]:
-	area_file = AREA_REFS_DIR / f"{area_key}.yaml"
-	checks: list[CheckResult] = []
-
-	preflight_ok, preflight_detail = run_runtime_preflight_tests()
-	add_check(checks, "daily_compass_unit_tests", preflight_ok, preflight_detail, "preflight")
-	if not preflight_ok:
-		return checks
-
+def collect_skill_checks(area_key: str, area_file: Path, checks: list[CheckResult]) -> tuple[Path | None, str, list[str], str]:
 	exists = area_file.exists()
 	add_check(checks, "yaml_exists", exists, str(area_file), "skill")
 	if not exists:
-		return checks
+		return None, "", [], ""
 
 	cfg = parse_top_level_yaml(area_file)
 	name_val = cfg.get("name", "").strip()
@@ -213,85 +201,161 @@ def collect_area_test_checks(area_key: str) -> list[CheckResult]:
 
 	skill_dir = find_skill_dir(skill_name, HERMES_SKILLS_DIR) if skill_name else None
 	add_check(checks, "skill_found", skill_dir is not None, str(skill_dir) if skill_dir else "not found", "skill")
+	return skill_dir, name_val, dims, skill_name
 
+
+def collect_signal_guidance_checks(
+	checks: list[CheckResult], area_sec: str, line_sec: str
+) -> tuple[bool, str]:
+	area_signal_guidance_ok = bool(area_sec)
+	area_signal_guidance_detail = clean_block(area_sec) if area_sec else "missing"
+	if area_sec:
+		enum_ok, enum_detail = check_signal_guidance_enumeration(area_sec)
+		add_check(checks, "area_signal_guidance_enumerated", enum_ok, enum_detail, "signal_guidance")
+		verb_ok, verb_detail = check_signal_directive_verbs(area_sec)
+		add_check(checks, "area_signal_directive_verbs", verb_ok, verb_detail, "signal_guidance")
+		scope_ok, scope_detail = check_signal_scope_addresses(area_sec)
+		add_check(checks, "area_signal_scope_addresses", scope_ok, scope_detail, "signal_guidance")
+		dup_ok, dup_detail = check_signal_guidance_duplication(area_sec)
+		add_check(checks, "area_signal_guidance_no_duplication", dup_ok, dup_detail, "signal_guidance")
+	else:
+		add_check(checks, "area_signal_guidance_enumerated", False, "missing area signal section", "signal_guidance")
+		add_check(checks, "area_signal_directive_verbs", False, "missing area signal section", "signal_guidance")
+		add_check(checks, "area_signal_scope_addresses", False, "missing area signal section", "signal_guidance")
+
+	add_check(checks, "line_signal_section_removed", not bool(line_sec), clean_block(line_sec) if line_sec else "absent", "signal_guidance")
+	return area_signal_guidance_ok, area_signal_guidance_detail
+
+
+def collect_infrastructure_checks(
+	checks: list[CheckResult],
+	area_key: str,
+	boundary: Path,
+	name_val: str,
+	dims: list[str],
+	area_sec: str,
+	daily_compass_module: object,
+	area_signal_guidance_detail: str,
+) -> str:
+	add_check(checks, "boundary_exists", boundary.exists(), str(boundary), "infrastructure")
+	if boundary.exists():
+		try:
+			boundary_source = boundary.read_text(encoding="utf-8", errors="replace")
+		except OSError:
+			boundary_source = ""
+		load_env_file_ok = bool(re.search(r"\bload_env_file\s*\(\s*\)", boundary_source))
+		add_check(
+			checks,
+			"boundary_loads_env_file",
+			load_env_file_ok,
+			"calls load_env_file() from shared helpers" if load_env_file_ok else "missing load_env_file() call",
+			"infrastructure",
+		)
+		imports_shared = bool(
+			re.search(r"(^|\n)\s*from\s+daily_compass_shared\s+import\s+", boundary_source)
+			or re.search(r"(^|\n)\s*import\s+daily_compass_shared(\s|$)", boundary_source)
+		)
+		add_check(
+			checks,
+			"boundary_imports_daily_compass_shared",
+			imports_shared,
+			"imports daily_compass_shared" if imports_shared else "missing import daily_compass_shared",
+			"infrastructure",
+		)
+
+	if not boundary.exists():
+		return area_signal_guidance_detail
+
+	result = run_boundary_script(area_key, boundary, BOUNDARY_SCRIPT_TIMEOUT, os.environ.copy())
+	add_check(checks, "boundary_exec", result.ok, f"exit={result.returncode}", "infrastructure")
+	if not result.ok:
+		add_check(checks, "boundary_area_context_validated", False, "invalid AreaContext JSON", "infrastructure")
+		return area_signal_guidance_detail
+
+	payload = result.payload
+	status_val = str(payload.get("status", "")).strip()
+	status_ok = status_val in {"ok", "TBD", "error"}
+	add_check(checks, "boundary_status_valid", status_ok, status_val or "missing", "infrastructure")
+	lines = payload.get("lines", [])
+
+	boundary_candidate = {
+		"status": str(payload.get("status", "")),
+		"reason": str(payload.get("reason", "")),
+		"signal": str(payload.get("signal", "")),
+		"lines": [
+			{
+				"title": str(x.get("title", "")),
+				"url": str(x.get("url", "")),
+				"body": str(x.get("body", "")),
+				"signal": str(x.get("signal", "")),
+			}
+			for x in (lines if isinstance(lines, list) else [])
+		],
+	}
+	boundary_ctx_ok = is_valid_boundary_area_context(boundary_candidate, area_key)
+	projected_area = {
+		"name": name_val,
+		"key": area_key,
+		"dimension": dims[0] if dims else "mind",
+		"signal": str(boundary_candidate.get("signal", "")),
+		"lines": [
+			{
+				"title": str(x.get("title", "")),
+				"url": str(x.get("url", "")),
+				"body": str(x.get("body", "")),
+				"signal": str(x.get("signal", "")),
+			}
+			for x in boundary_candidate["lines"]
+		],
+	}
+	area_ctx_ok = is_valid_area_context(projected_area, area_key)
+	line_ctx_ok = all(is_valid_line_context(x) for x in projected_area["lines"])
+	area_signal_empty = projected_area.get("signal", "") == ""
+	line_signals_empty = all(str(x.get("signal", "")) == "" for x in projected_area["lines"])
+	add_check(checks, "boundary_area_context_validated", boundary_ctx_ok, "BoundaryAreaContext JSON + strict schema", "infrastructure")
+	add_check(checks, "boundary_to_area_projection", area_ctx_ok, "BoundaryAreaContext -> AreaContext projection schema", "infrastructure")
+	add_check(checks, "boundary_line_context_schema", line_ctx_ok, f"LineContext strict schema; lines={len(projected_area['lines'])}", "infrastructure")
+	add_check(checks, "boundary_area_signal_empty", area_signal_empty, f"AreaContext signal={projected_area.get('signal', '')!r}", "infrastructure")
+	add_check(checks, "boundary_line_signals_empty", line_signals_empty, f"all line signals empty; lines={len(projected_area['lines'])}", "infrastructure")
+	if area_sec:
+		return daily_compass_module.build_area_signal_prompt(area_sec, projected_area)
+	return area_signal_guidance_detail
+
+
+def collect_area_test_checks(area_key: str) -> list[CheckResult]:
+	area_file = AREA_REFS_DIR / f"{area_key}.yaml"
+	checks: list[CheckResult] = []
+
+	preflight_ok, preflight_detail = run_runtime_preflight_tests()
+	add_check(checks, "daily_compass_unit_tests", preflight_ok, preflight_detail, "preflight")
+	if not preflight_ok:
+		return checks
+
+	skill_dir, name_val, dims, _skill_name = collect_skill_checks(area_key, area_file, checks)
+	if not skill_dir:
+		return checks
+
+	daily_compass_module = load_daily_compass_module()
 	skill_text = ""
-	if skill_dir:
-		daily_compass_module = load_daily_compass_module()
-		skill_md = skill_dir / "SKILL.md"
-		if skill_md.exists():
-			skill_text = skill_md.read_text(encoding="utf-8", errors="replace")
-		area_sec = extract_section(skill_text, "Area signal")
-		line_sec = extract_section(skill_text, "Line signal") or extract_section(skill_text, "Line signal (optional)")
-		area_signal_guidance_ok = bool(area_sec)
-		area_signal_guidance_detail = clean_block(area_sec) if area_sec else "missing"
-		if area_sec:
-			enum_ok, enum_detail = check_signal_guidance_enumeration(area_sec)
-			add_check(checks, "area_signal_guidance_enumerated", enum_ok, enum_detail, "signal_guidance")
-			verb_ok, verb_detail = check_signal_directive_verbs(area_sec)
-			add_check(checks, "area_signal_directive_verbs", verb_ok, verb_detail, "signal_guidance")
-			scope_ok, scope_detail = check_signal_scope_addresses(area_sec)
-			add_check(checks, "area_signal_scope_addresses", scope_ok, scope_detail, "signal_guidance")
-		else:
-			add_check(checks, "area_signal_guidance_enumerated", False, "missing area signal section", "signal_guidance")
-			add_check(checks, "area_signal_directive_verbs", False, "missing area signal section", "signal_guidance")
-			add_check(checks, "area_signal_scope_addresses", False, "missing area signal section", "signal_guidance")
-		add_check(checks, "line_signal_section_removed", not bool(line_sec), clean_block(line_sec) if line_sec else "absent", "signal_guidance")
-		
-		# Check for duplication with common contract
-		if area_sec:
-			dup_ok, dup_detail = check_signal_guidance_duplication(area_sec)
-			add_check(checks, "area_signal_guidance_no_duplication", dup_ok, dup_detail, "signal_guidance")
+	skill_md = skill_dir / "SKILL.md"
+	if skill_md.exists():
+		skill_text = skill_md.read_text(encoding="utf-8", errors="replace")
+	area_sec = extract_section(skill_text, "Area signal")
+	line_sec = extract_section(skill_text, "Line signal") or extract_section(skill_text, "Line signal (optional)")
+	area_signal_guidance_ok, area_signal_guidance_detail = collect_signal_guidance_checks(checks, area_sec, line_sec)
 
-		boundary = skill_dir / "scripts" / f"daily-{area_key}-status.py"
-		add_check(checks, "boundary_exists", boundary.exists(), str(boundary), "infrastructure")
-
-		if boundary.exists():
-			result = run_boundary_script(area_key, boundary, 60, os.environ.copy())
-			add_check(checks, "boundary_exec", result.ok, f"exit={result.returncode}", "infrastructure")
-			if not result.ok:
-				add_check(checks, "boundary_area_context_validated", False, "invalid AreaContext JSON", "infrastructure")
-			if result.ok:
-				payload = result.payload
-				key_match = str(payload.get("key", "")).strip() == area_key
-				add_check(checks, "boundary_key_match", key_match, str(payload.get("key", "")), "infrastructure")
-				name_match = str(payload.get("name", "")).strip() == name_val
-				add_check(checks, "boundary_name_match", name_match, str(payload.get("name", "")), "infrastructure")
-				dim = str(payload.get("dimension", "")).strip()
-				dim_ok = dim in dims if dims else dim in VALID_DIMENSIONS
-				add_check(checks, "boundary_dimension_match", dim_ok, dim or "missing", "infrastructure")
-				status_val = str(payload.get("status", "")).strip()
-				status_ok = status_val in {"ok", "TBD", "error"}
-				add_check(checks, "boundary_status_valid", status_ok, status_val or "missing", "infrastructure")
-				lines = payload.get("lines", [])
-
-				boundary_candidate = {
-					"name": str(payload.get("name", "")),
-					"key": str(payload.get("key", "")),
-					"dimension": str(payload.get("dimension", "")),
-					"status": str(payload.get("status", "")),
-					"reason": str(payload.get("reason", "")),
-					"signal": str(payload.get("signal", "")),
-					"lines": [
-						{
-							"title": str(x.get("title", "")),
-							"url": str(x.get("url", "")),
-							"body": str(x.get("body", "")),
-							"signal": str(x.get("signal", "")),
-						}
-						for x in (lines if isinstance(lines, list) else [])
-					],
-				}
-				boundary_ctx_ok = is_valid_boundary_area_context(boundary_candidate, area_key)
-				projected_area = project_boundary_to_area_context(boundary_candidate)
-				area_ctx_ok = is_valid_area_context(projected_area, area_key)
-				line_ctx_ok = all(is_valid_line_context(x) for x in projected_area["lines"])
-				add_check(checks, "boundary_area_context_validated", boundary_ctx_ok, "BoundaryAreaContext JSON + strict schema", "infrastructure")
-				add_check(checks, "boundary_to_area_projection", area_ctx_ok, "BoundaryAreaContext -> AreaContext projection schema", "infrastructure")
-				add_check(checks, "boundary_line_context_schema", line_ctx_ok, f"LineContext strict schema; lines={len(projected_area['lines'])}", "infrastructure")
-				if area_sec:
-					area_signal_guidance_detail = daily_compass_module.build_area_signal_prompt(area_sec, projected_area)
-
-		add_check(checks, "area_signal_guidance_section", area_signal_guidance_ok, area_signal_guidance_detail, "signal_guidance")
+	boundary = skill_dir / "scripts" / f"daily-{area_key}-status.py"
+	area_signal_guidance_detail = collect_infrastructure_checks(
+		checks,
+		area_key,
+		boundary,
+		name_val,
+		dims,
+		area_sec,
+		daily_compass_module,
+		area_signal_guidance_detail,
+	)
+	add_check(checks, "area_signal_guidance_section", area_signal_guidance_ok, area_signal_guidance_detail, "signal_guidance")
 
 	return checks
 

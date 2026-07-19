@@ -85,20 +85,26 @@ git commit -m "..."
 git push
 ```
 
-## API Reference (mockup)
+## API Reference
 
-These calls represent the future SG platform API. Currently return placeholder data.
+Daily Compass can read the platform-backed next-step feed when these variables
+are available in the environment or `~/.hermes/.env`:
 
-```python
-# [TBD] — not yet implemented
-sg.contracts.list(user_id)            # → active contracts with dimension tags
-sg.dimensions.hunger(user_id)         # → ordered list: least-fed dimension first
-sg.checkin.daily(user_id)             # → daily projection across contracts
-sg.commits.happy_moment_rate(user_id) # → joy index per dimension
-```
+- `SHARED_GOALS_API_BASE_URL`
+- `SHARED_GOALS_AGENT_KEY_ID`
 
-> Platform API will replace mockup calls as the platform develops.
-> Personal area files in references/ will be replaced by live contract data.
+Implemented endpoint:
+
+- `GET /api/v1/compass/next-steps` → active joined-contract `next_step` items
+
+Planned platform calculations:
+
+- dimension hunger order
+- daily projection across contracts
+- happy-moment rate per dimension
+
+Local `references/*.yaml` area files remain the fallback/config layer while the
+platform feed grows.
 
 ## Model vs Execution separation
 
@@ -108,7 +114,7 @@ This skill owns the **model** (what an area is). Execution logic (what to do wit
 |---|---|
 | Area definitions (name, dimensions, skill, status, notes) | Prompts (what to ask each skill) |
 | Entity schema (Goal, Contract, Commit) | Algorithm (how to run compass) |
-| API mockup | Output template |
+| API contract | Output template |
 | Git setup, pitfalls (repo-specific) | Operational pitfalls (cron, fallback, etc.) |
 
 ## Daily Compass
@@ -134,8 +140,9 @@ notes: ""                        # human-readable description (for ls references
 Files in `references/` are gitignored. Never commit them. Never reference
 specific area names or skill names in this SKILL.md.
 
-When SG platform API is ready, `references/*.yaml` files will be replaced by
-live contract data from `sg.contracts.list(user_id)`.
+Daily Compass full runs include live platform data from
+`GET /api/v1/compass/next-steps` when configured. Selected-area debug runs keep
+using local `references/*.yaml` only.
 
 ## Compass signal
 

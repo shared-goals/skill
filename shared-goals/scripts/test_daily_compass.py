@@ -202,6 +202,89 @@ class DailyCompassPureTests(unittest.TestCase):
         self.assertEqual(tasks[0].index, 0)
         self.assertTrue(tasks[0].prompt.startswith("GOAL:"))
 
+    def test_fetch_platform_compass_next_steps_uses_env_config(self) -> None:
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self):
+                return b'{"next_steps":[{"goal_id":"sg-oss-coding","next_step":"Ship feed"}]}'
+
+        logger = module.TraceLogger(verbose=False)
+        try:
+            with mock.patch.object(module, "load_env_file"), mock.patch.dict(
+                module.os.environ,
+                {
+                    "SHARED_GOALS_API_BASE_URL": "http://127.0.0.1:8000/",
+                    "SHARED_GOALS_AGENT_KEY_ID": "unit-agent-key",
+                },
+            ), mock.patch.object(module, "urlopen", return_value=FakeResponse()) as fake_urlopen:
+                next_steps = module.fetch_platform_compass_next_steps(logger)
+        finally:
+            if hasattr(logger, "_fh") and not logger._fh.closed:
+                logger._fh.close()
+
+        self.assertEqual(next_steps, [{"goal_id": "sg-oss-coding", "next_step": "Ship feed"}])
+        request = fake_urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "http://127.0.0.1:8000/api/v1/compass/next-steps")
+        self.assertIn(("X-agent-key-id", "unit-agent-key"), request.header_items())
+
+    def test_build_platform_next_steps_area_preserves_goal_tags(self) -> None:
+        area = module.build_platform_next_steps_area(
+            [
+                {
+                    "goal_id": "sg-oss-coding",
+                    "goal_tag": "#sg-oss-coding",
+                    "goal_title": "Contribute to open source together",
+                    "next_step": "Replace one local registry read.",
+                    "cadence": "weekly",
+                    "time_minutes": 45,
+                    "skill_tag": "mind",
+                    "is_happy_moment": True,
+                    "source": "platform",
+                }
+            ]
+        )
+
+        self.assertIsNotNone(area)
+        assert area is not None
+        self.assertEqual(area["key"], "platform-next-steps")
+        self.assertEqual(area["dimension"], "will")
+        self.assertEqual(area["status"], "ok")
+        self.assertEqual(area["lines"][0]["title"], "#sg-oss-coding Replace one local registry read.")
+        self.assertIn("Contribute to open source together", area["lines"][0]["body"])
+        self.assertIn("dimension=mind", area["lines"][0]["body"])
+
+    def test_build_runtime_includes_platform_feed_when_enabled(self) -> None:
+        logger = module.TraceLogger(verbose=False)
+        try:
+            with mock.patch.object(
+                module,
+                "fetch_platform_compass_next_steps",
+                return_value=[{"goal_tag": "#sg-oss-coding", "next_step": "Ship feed."}],
+            ):
+                runtime = module.build_runtime([], {}, logger, include_platform_feed=True)
+        finally:
+            if hasattr(logger, "_fh") and not logger._fh.closed:
+                logger._fh.close()
+
+        self.assertEqual([area["key"] for area in runtime["areas"]], ["platform-next-steps"])
+
+    def test_build_runtime_skips_platform_feed_by_default(self) -> None:
+        logger = module.TraceLogger(verbose=False)
+        try:
+            with mock.patch.object(module, "fetch_platform_compass_next_steps") as fake_fetch:
+                runtime = module.build_runtime([], {}, logger)
+        finally:
+            if hasattr(logger, "_fh") and not logger._fh.closed:
+                logger._fh.close()
+
+        self.assertEqual(runtime["areas"], [])
+        fake_fetch.assert_not_called()
+
     def test_choose_primary_dimension(self) -> None:
         self.assertEqual(module.choose_primary_dimension(["mind", "faith"]), "mind")
         self.assertEqual(module.choose_primary_dimension(["unknown", "will"]), "will")

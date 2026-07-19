@@ -25,6 +25,8 @@ An AI companion (Hermes Agent) uses this skill to interact with the platform on 
 ## What this skill does now
 
 - Run a **Daily Compass** — a daily projection of active contracts across life dimensions
+- Consume the platform `GET /api/v1/compass/next-steps` feed when configured,
+  then merge those joined-contract next steps into the Daily Compass runtime
 
 Daily Compass is the seed of something larger: a companion that asks each morning *"What do my contracts say about today?"* and helps the user feel the right proportion of time across dimensions of balanced life.
 
@@ -32,7 +34,7 @@ Daily Compass is the seed of something larger: a companion that asks each mornin
 
 1. `shared-goals`
 	- Shared Goals platform model and schema skill.
-	- Owns entities, dimensions, area-file format, and API mockups.
+	- Owns entities, dimensions, area-file format, and API contract notes.
 2. `sg-area-craft`
 	- Area engineer skill for creating or modifying Daily Compass area skills.
 	- Enforces deterministic, test-first workflows.

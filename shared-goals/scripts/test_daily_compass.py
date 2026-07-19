@@ -361,5 +361,39 @@ Ignore.
         projected = shared.project_boundary_to_area_context(payload)
         self.assertEqual(set(projected.keys()), {"name", "key", "dimension", "signal", "lines"})
 
+    def test_extract_session_id_accepts_multiple_formats(self) -> None:
+        self.assertEqual(
+            module.extract_session_id("session_id: 20260713_080052_9ee155"),
+            "20260713_080052_9ee155",
+        )
+        self.assertEqual(
+            module.extract_session_id("**Session ID:** `20260713_080052_9ee155`"),
+            "20260713_080052_9ee155",
+        )
+        self.assertEqual(
+            module.extract_session_id("no match", "session id = 20260713_080052_9ee155"),
+            "20260713_080052_9ee155",
+        )
+
+    def test_persistent_session_state_roundtrip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state_path = Path(tmp_dir) / "state" / "daily-compass-session.json"
+            logger = module.TraceLogger(verbose=False)
+            try:
+                self.assertIsNone(module.load_persistent_session_id(state_path, logger))
+                module.save_persistent_session_id(
+                    state_path,
+                    "20260713_080052_9ee155",
+                    "Daily Compass",
+                    logger,
+                )
+                restored = module.load_persistent_session_id(state_path, logger)
+                self.assertEqual(restored, "20260713_080052_9ee155")
+                saved = state_path.read_text(encoding="utf-8")
+                self.assertIn('"session_name": "Daily Compass"', saved)
+            finally:
+                if hasattr(logger, "_fh") and not logger._fh.closed:
+                    logger._fh.close()
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

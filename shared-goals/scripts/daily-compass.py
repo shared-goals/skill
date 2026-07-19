@@ -19,7 +19,7 @@ import os
 import re
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -60,10 +60,12 @@ AREAS_DIR = SHARED_GOALS_DIR / "references"
 TEMPLATE_FILE = SHARED_GOALS_DIR / "templates" / "daily-output.md"
 LOGS_DIR = SHARED_GOALS_DIR / "logs"
 JOBS_FILE = HOME / ".hermes" / "cron" / "jobs.json"
+SESSION_STATE_FILE = SHARED_GOALS_DIR / "state" / "daily-compass-session.json"
 
 DEFAULT_DIMENSIONS = ["faith", "will", "feeling", "mind"]
 VALID_DIMENSIONS = set(DEFAULT_DIMENSIONS)
 DEFAULT_COMPASS_PROMPT = "Write one short phrase about today's Shared Goals direction based on area summaries."
+DEFAULT_SESSION_TITLE = "Daily Compass"
 
 PHASE_BOUNDARY = "Phase 1: boundary scripts"
 PHASE_PROMPTS = "Phase 2: signal prompts"
@@ -117,6 +119,10 @@ class HermesSessionState:
 	hermes_argv: list[str]
 	chat_argv: list[str]
 	session_id: str | None = None
+	session_name: str = DEFAULT_SESSION_TITLE
+	session_state_file: Path = SESSION_STATE_FILE
+	rename_needed: bool = False
+	renamed_session_ids: set[str] = field(default_factory=set)
 
 
 class TraceLogger:
@@ -523,12 +529,84 @@ def resolve_chat_argv() -> list[str]:
 	return resolve_non_tui_cli_argv()
 
 
-def extract_session_id(stderr_text: str) -> str | None:
-	match = re.search(r"session_id:\s*([^\s]+)", stderr_text or "")
-	if not match:
+def extract_session_id(*texts: str) -> str | None:
+	patterns = [
+		r"session[_\s-]*id\s*[:=]\s*`?([A-Za-z0-9_.:-]+)`?",
+		r"\b([0-9]{8}_[0-9]{6}_[a-f0-9]{6,})\b",
+	]
+	for text in texts:
+		blob = str(text or "")
+		if not blob:
+			continue
+		for pattern in patterns:
+			match = re.search(pattern, blob, flags=re.IGNORECASE)
+			if not match:
+				continue
+			value = str(match.group(1)).strip()
+			if value:
+				return value
+	return None
+
+
+def load_persistent_session_id(path: Path, logger: TraceLogger) -> str | None:
+	if not path.exists():
 		return None
-	value = str(match.group(1)).strip()
+	try:
+		payload = json.loads(path.read_text(encoding="utf-8"))
+	except (OSError, ValueError) as exc:
+		logger.log(f"Session state read failed: {exc}")
+		return None
+	if not isinstance(payload, dict):
+		return None
+	value = str(payload.get("session_id", "")).strip()
 	return value or None
+
+
+def save_persistent_session_id(path: Path, session_id: str, session_name: str, logger: TraceLogger) -> None:
+	if not session_id:
+		return
+	payload = {
+		"session_id": str(session_id),
+		"session_name": str(session_name),
+		"updated_at": datetime.now().isoformat(timespec="seconds"),
+	}
+	try:
+		path.parent.mkdir(parents=True, exist_ok=True)
+		path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+	except OSError as exc:
+		logger.log(f"Session state write failed: {exc}")
+
+
+def maybe_rename_session(session: HermesSessionState, logger: TraceLogger) -> None:
+	if session.mode != "chat":
+		return
+	if not session.session_id:
+		return
+	if not session.session_name.strip():
+		return
+	if not session.rename_needed:
+		return
+	if session.session_id in session.renamed_session_ids:
+		return
+	if not session.hermes_argv:
+		return
+
+	cmd = list(session.hermes_argv)
+	cmd.extend(["sessions", "rename", session.session_id, session.session_name])
+	result = run_subprocess_text(cmd, timeout=60, env=os.environ.copy())
+	if result.timed_out:
+		logger.log(f"Session rename timed out for {session.session_id}")
+		return
+	if result.launch_error:
+		logger.log(f"Session rename launch failed for {session.session_id}: {result.stderr[:300]}")
+		return
+	if result.returncode != 0:
+		err = (result.stderr or result.stdout or "").strip()[:300]
+		logger.log(f"Session rename failed for {session.session_id}: {err}")
+		return
+	logger.log(f"Session renamed: {session.session_id} -> '{session.session_name}'")
+	session.renamed_session_ids.add(session.session_id)
+	session.rename_needed = False
 
 
 def build_hermes_cmd(prompt: str, model: str, provider: str, session: HermesSessionState) -> tuple[list[str], str]:
@@ -612,6 +690,7 @@ def run_hermes_raw(
 		logger.log(f"Hermes resume failed for {label} ({returncode}): {err}")
 		logger.log(f"Hermes fallback start: {label} (chat_new)")
 		session.session_id = None
+		session.rename_needed = True
 		fallback_cmd, fallback_mode = build_hermes_cmd(prompt, model, provider, session)
 		result = run_cmd(fallback_cmd, fallback_mode)
 		if result is None:
@@ -622,11 +701,13 @@ def run_hermes_raw(
 		mode = fallback_mode
 
 	if session.mode == "chat" and returncode == 0:
-		session_id = extract_session_id(stderr_text)
+		session_id = extract_session_id(stderr_text, stdout_text)
 		if session_id:
 			if session.session_id != session_id:
 				logger.log(f"Hermes session id: {session_id}")
 			session.session_id = session_id
+			save_persistent_session_id(session.session_state_file, session_id, session.session_name, logger)
+			maybe_rename_session(session, logger)
 
 	if returncode != 0:
 		err = (stderr_text or "").strip()[:300]
@@ -1036,6 +1117,16 @@ def parse_args() -> argparse.Namespace:
 	p.add_argument("--verbose", action="store_true", help="Print trace to stdout")
 	p.add_argument("--fast", action="store_true", help="Skip signal phase")
 	p.add_argument(
+		"--session-title",
+		default=DEFAULT_SESSION_TITLE,
+		help="Stable Hermes session title used for Daily Compass runs",
+	)
+	p.add_argument(
+		"--session-state-file",
+		default=str(SESSION_STATE_FILE),
+		help="Path to JSON state file that stores persistent Daily Compass session_id",
+	)
+	p.add_argument(
 		"--session-mode",
 		choices=["chat", "oneshot"],
 		default="chat",
@@ -1057,9 +1148,18 @@ def main() -> int:
 		mode=args.session_mode,
 		hermes_argv=resolve_hermes_argv(),
 		chat_argv=resolve_chat_argv(),
+		session_name=str(args.session_title or DEFAULT_SESSION_TITLE).strip() or DEFAULT_SESSION_TITLE,
+		session_state_file=Path(str(args.session_state_file)).expanduser(),
+		rename_needed=args.session_mode == "chat",
 	)
 	if session.mode == "chat":
 		logger.log("Hermes session mode: chat (single session for this run)")
+		restored_session_id = load_persistent_session_id(session.session_state_file, logger)
+		if restored_session_id:
+			session.session_id = restored_session_id
+			logger.log(f"Restored persistent session id: {restored_session_id}")
+		else:
+			logger.log("No persistent session id found; Daily Compass will create a new one")
 	else:
 		logger.log("Hermes session mode: oneshot")
 	if not session.hermes_argv:

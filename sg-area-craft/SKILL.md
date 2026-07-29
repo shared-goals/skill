@@ -14,7 +14,7 @@ This skill is for three jobs:
 2. Enhance an existing area safely.
 3. Craft a new area and verify it end-to-end.
 
-Use this skill when working on Daily Compass areas under `.hermes/skills/areas`.
+Use this skill when working on Daily Compass areas under `.hermes/skills/shared-goals/areas`.
 
 ## Entry points
 
@@ -47,8 +47,8 @@ Input contract:
 ## Architecture map (source of truth)
 
 - Area reference YAML: `.hermes/skills/shared-goals/shared-goals/references/<area>.yaml`
-- Area skill: `.hermes/skills/areas/<skill-name>/SKILL.md`
-- Boundary script: `.hermes/skills/areas/<skill-name>/scripts/daily-<area>-status.py`
+- Area skill: `.hermes/skills/shared-goals/areas/<skill-name>/SKILL.md`
+- Boundary script: `.hermes/skills/shared-goals/areas/<skill-name>/scripts/daily-<area>-status.py`
 - Validator: `.hermes/skills/shared-goals/shared-goals/scripts/area-test.py`
 - Runtime preview: `.hermes/skills/shared-goals/shared-goals/scripts/daily-compass.py`
 
@@ -121,7 +121,7 @@ Use when area does not exist yet.
 
 Steps:
 1. Create reference YAML at `.hermes/skills/shared-goals/shared-goals/references/<area>.yaml`.
-2. Create skill directory `.hermes/skills/areas/<skill-name>/`.
+2. Create skill directory `.hermes/skills/shared-goals/areas/<skill-name>/`.
 3. Add SKILL.md with frontmatter `name` matching YAML `skill`.
 4. Add boundary script at `scripts/daily-<area>-status.py`.
 5. Ensure boundary script prints exactly one JSON object.
@@ -239,8 +239,8 @@ make compass-fast-run <area>
 
 Allowed edit targets:
 - `.hermes/skills/shared-goals/shared-goals/references/<area>.yaml`
-- `.hermes/skills/areas/<skill-name>/SKILL.md`
-- `.hermes/skills/areas/<skill-name>/scripts/daily-<area>-status.py`
+- `.hermes/skills/shared-goals/areas/<skill-name>/SKILL.md`
+- `.hermes/skills/shared-goals/areas/<skill-name>/scripts/daily-<area>-status.py`
 
 Disallowed behavior:
 - Do not invent extra files or compatibility wrappers.

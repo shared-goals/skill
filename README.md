@@ -43,7 +43,7 @@ Daily Compass is the seed of something larger: a companion that asks each mornin
 
 Personal area skills are intentionally outside this repo in:
 
-`~/.hermes/skills/areas/`
+`~/.hermes/skills/shared-goals/areas/`
 
 They are referenced by pattern, not committed here.
 This prevents accidental publication of private context such as paths, hostnames, or personal mappings.

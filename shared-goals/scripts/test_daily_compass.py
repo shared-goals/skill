@@ -7,11 +7,13 @@ import importlib.util
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from unittest import mock
 from pathlib import Path
 
 
 MODULE_PATH = Path(__file__).parent / "daily-compass.py"
+SHARED_GOALS_MODULE_PATH = Path(__file__).parent / "daily-shared-goals-status.py"
 SCRIPTS_DIR = Path(__file__).parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
@@ -23,6 +25,12 @@ assert spec and spec.loader
 module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)  # type: ignore[attr-defined]
+
+sg_spec = importlib.util.spec_from_file_location("daily_shared_goals_module", SHARED_GOALS_MODULE_PATH)
+assert sg_spec and sg_spec.loader
+sg_module = importlib.util.module_from_spec(sg_spec)
+sys.modules[sg_spec.name] = sg_module
+sg_spec.loader.exec_module(sg_module)  # type: ignore[attr-defined]
 
 
 class DailyCompassPureTests(unittest.TestCase):
@@ -202,88 +210,208 @@ class DailyCompassPureTests(unittest.TestCase):
         self.assertEqual(tasks[0].index, 0)
         self.assertTrue(tasks[0].prompt.startswith("GOAL:"))
 
-    def test_fetch_platform_compass_next_steps_uses_env_config(self) -> None:
-        class FakeResponse:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, _exc_type, _exc, _tb):
-                return False
-
-            def read(self):
-                return b'{"next_steps":[{"goal_id":"sg-oss-coding","next_step":"Ship feed"}]}'
-
-        logger = module.TraceLogger(verbose=False)
-        try:
-            with mock.patch.object(module, "load_env_file"), mock.patch.dict(
-                module.os.environ,
-                {
-                    "SHARED_GOALS_API_BASE_URL": "http://127.0.0.1:8000/",
-                    "SHARED_GOALS_AGENT_KEY_ID": "unit-agent-key",
-                },
-            ), mock.patch.object(module, "urlopen", return_value=FakeResponse()) as fake_urlopen:
-                next_steps = module.fetch_platform_compass_next_steps(logger)
-        finally:
-            if hasattr(logger, "_fh") and not logger._fh.closed:
-                logger._fh.close()
-
-        self.assertEqual(next_steps, [{"goal_id": "sg-oss-coding", "next_step": "Ship feed"}])
-        request = fake_urlopen.call_args.args[0]
-        self.assertEqual(request.full_url, "http://127.0.0.1:8000/api/v1/compass/next-steps")
-        self.assertIn(("X-agent-key-id", "unit-agent-key"), request.header_items())
-
     def test_build_platform_next_steps_area_preserves_goal_tags(self) -> None:
-        area = module.build_platform_next_steps_area(
-            [
+        payload = {
+            "dimension_order": ["faith", "will", "feeling", "mind"],
+            "dimensions": [
                 {
-                    "goal_id": "sg-oss-coding",
-                    "goal_tag": "#sg-oss-coding",
-                    "goal_title": "Contribute to open source together",
-                    "next_step": "Replace one local registry read.",
-                    "cadence": "weekly",
-                    "time_minutes": 45,
-                    "skill_tag": "mind",
-                    "is_happy_moment": True,
-                    "source": "platform",
+                    "dimension": "faith",
+                    "last_fed_at": "2026-07-27T14:00:00+00:00",
+                    "goals": [
+                        {
+                            "goal_tag": "#sg-sharedgoals-dev",
+                            "goal_title": "Shared Goals Development",
+                            "dimensions": ["faith", "mind"],
+                            "next_step_text": "Run Plavdom pilot as the first concrete partner-style goal experiment",
+                        }
+                    ],
                 }
-            ]
-        )
+            ],
+        }
+        lines = sg_module.build_platform_lines(payload)
 
-        self.assertIsNotNone(area)
-        assert area is not None
-        self.assertEqual(area["key"], "platform-next-steps")
-        self.assertEqual(area["dimension"], "will")
-        self.assertEqual(area["status"], "ok")
-        self.assertEqual(area["lines"][0]["title"], "#sg-oss-coding Replace one local registry read.")
-        self.assertIn("Contribute to open source together", area["lines"][0]["body"])
-        self.assertIn("dimension=mind", area["lines"][0]["body"])
-
-    def test_build_runtime_includes_platform_feed_when_enabled(self) -> None:
-        logger = module.TraceLogger(verbose=False)
-        try:
-            with mock.patch.object(
-                module,
-                "fetch_platform_compass_next_steps",
-                return_value=[{"goal_tag": "#sg-oss-coding", "next_step": "Ship feed."}],
-            ):
-                runtime = module.build_runtime([], {}, logger, include_platform_feed=True)
-        finally:
-            if hasattr(logger, "_fh") and not logger._fh.closed:
-                logger._fh.close()
-
-        self.assertEqual([area["key"] for area in runtime["areas"]], ["platform-next-steps"])
+        self.assertEqual(len(lines), 1)
+        self.assertIn("Shared Goals Development", lines[0]["title"])
+        self.assertIn("#sg-sharedgoals-dev", lines[0]["title"])
+        self.assertIn("#faith", lines[0]["title"])
+        self.assertIn("#mind", lines[0]["title"])
+        self.assertIn("hunger:", lines[0]["title"])
+        self.assertNotIn("#sg-sharedgoals-dev", lines[0]["body"])
 
     def test_build_runtime_skips_platform_feed_by_default(self) -> None:
         logger = module.TraceLogger(verbose=False)
         try:
-            with mock.patch.object(module, "fetch_platform_compass_next_steps") as fake_fetch:
-                runtime = module.build_runtime([], {}, logger)
+            runtime = module.build_runtime([], {}, logger)
         finally:
             if hasattr(logger, "_fh") and not logger._fh.closed:
                 logger._fh.close()
 
         self.assertEqual(runtime["areas"], [])
-        fake_fetch.assert_not_called()
+
+    def test_run_next_steps_recommendation_mode_uses_area_signal_pipeline(self) -> None:
+        payload = {
+            "dimension_order": ["will", "faith"],
+            "dimensions": [
+                {
+                    "dimension": "will",
+                    "goals": [
+                        {
+                            "goal_title": "Will Goal",
+                            "goal_tag": "#sg-will",
+                            "next_step_text": "Step will",
+                        }
+                    ],
+                }
+            ],
+        }
+        lines = sg_module.build_platform_lines(payload)
+        self.assertEqual(len(lines), 1)
+        self.assertIn("Will Goal", lines[0]["title"])
+
+    def test_render_shared_goals_section_formats_dimensions_goals_and_steps(self) -> None:
+        class FrozenDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):  # type: ignore[override]
+                return datetime(2026, 7, 28, 12, 0, tzinfo=timezone.utc)
+
+        with mock.patch.object(shared, "datetime", FrozenDateTime):
+            text = sg_module.render_shared_goals_section(
+                {
+                    "dimension_order": ["mind", "faith", "will", "feeling"],
+                    "hunger_diagnostics": [
+                        {"dimension": "mind", "last_fed_at": None},
+                        {"dimension": "faith", "last_fed_at": "2026-07-26T12:00:00+00:00"},
+                        {"dimension": "will", "last_fed_at": None},
+                        {"dimension": "feeling", "last_fed_at": None},
+                    ],
+                    "dimensions": [
+                        {
+                            "dimension": "faith",
+                            "last_fed_at": "2026-07-26T12:00:00+00:00",
+                            "goals": [
+                                {
+                                    "goal_tag": "#sg-homelab",
+                                    "goal_title": "Homelab",
+                                    "next_step_text": "Configure stable homelab infrastructure",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            )
+        self.assertIn("## Shared Goals", text)
+        self.assertIn("### Mind (never)", text)
+        self.assertIn("### Faith (2d)", text)
+        self.assertIn("### Will (never)", text)
+        self.assertIn("### Feeling (never)", text)
+        self.assertLess(text.index("### Mind"), text.index("### Faith"))
+        self.assertLess(text.index("### Faith"), text.index("### Will"))
+        self.assertLess(text.index("### Will"), text.index("### Feeling"))
+        self.assertIn("- Homelab #sg-homelab hunger:2d", text)
+        self.assertIn("- [ ] Configure stable homelab infrastructure #sg-homelab", text)
+        self.assertIn("No goals in this dimension.", text)
+        self.assertIn("\n\n- Homelab", text)
+
+    def test_render_shared_goals_section_handles_empty(self) -> None:
+        text = sg_module.render_shared_goals_section({"dimensions": []})
+        self.assertIn("## Shared Goals", text)
+        self.assertIn("### Faith (never)", text)
+        self.assertIn("### Will (never)", text)
+        self.assertIn("### Feeling (never)", text)
+        self.assertIn("### Mind (never)", text)
+        self.assertIn("No goals in this dimension.", text)
+
+    def test_render_next_steps_from_compass_snapshot_uses_shared_goals_area(self) -> None:
+        text = shared.render_next_steps_from_compass_snapshot(
+            {
+                "areas": [
+                    {
+                        "key": "shared-goals",
+                        "lines": [
+                            {
+                                "title": "Shared Goals Development #sg-sharedgoals-dev",
+                                "url": "",
+                                "body": "Run Plavdom pilot\nUpdate sg-prd README",
+                                "signal": "",
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+
+        self.assertIn("## Next Steps", text)
+        self.assertIn("- [ ] Shared Goals Development #sg-sharedgoals-dev", text)
+        self.assertIn("  - [ ] Run Plavdom pilot", text)
+        self.assertIn("  - [ ] Update sg-prd README", text)
+
+        def test_parse_completed_goals_from_compass_text_groups_tasks_by_goal(self) -> None:
+                text = """## Next Steps
+
+- [ ] Placeholder
+
+## Shared Goals
+
+### Will (never)
+
+- Shared Goals Development #sg-sharedgoals-dev hunger:neverd
+    - [x] Unite Daily Compass with Shared Goals MVP development loop #sg-sharedgoals-dev
+    - [x] Make Recommended Next Steps and Balanced Shared Goals as view of Compass in Markdown and Telegram #sg-sharedgoals-dev
+    - [ ] Update sg-prd skill README to satisfy the current use case #sg-sharedgoals-dev
+
+### Faith (0d)
+
+- Writing Personal WTD text #sg-wtd-writing hunger:0d
+    - [ ] Rename WTD context to project:wtd for Shared Goals development memory and PRD workflows #sg-wtd-writing
+"""
+                parsed = sg_module.parse_completed_goals_from_compass_text(text)
+
+                self.assertEqual(len(parsed), 1)
+                self.assertEqual(parsed[0]["goal_id"], "sg-sharedgoals-dev")
+                self.assertEqual(
+                        parsed[0]["completed"],
+                        [
+                                "Unite Daily Compass with Shared Goals MVP development loop",
+                                "Make Recommended Next Steps and Balanced Shared Goals as view of Compass in Markdown and Telegram",
+                        ],
+                )
+                self.assertEqual(
+                        parsed[0]["incomplete"],
+                        ["Update sg-prd skill README to satisfy the current use case"],
+                )
+
+    def test_build_platform_shared_goals_lines_uses_hunger_order(self) -> None:
+        lines = sg_module.build_platform_lines(
+            {
+                "dimension_order": ["will", "faith"],
+                "dimensions": [
+                    {
+                        "dimension": "faith",
+                        "goals": [
+                            {
+                                "goal_title": "Faith Goal",
+                                "goal_tag": "#sg-faith",
+                                "next_step_text": "Step faith",
+                            }
+                        ],
+                    },
+                    {
+                        "dimension": "will",
+                        "goals": [
+                            {
+                                "goal_title": "Will Goal",
+                                "goal_tag": "#sg-will",
+                                "next_step_text": "Step will",
+                            }
+                        ],
+                    },
+                ],
+            }
+        )
+
+        self.assertEqual(len(lines), 2)
+        self.assertIn("Will Goal", lines[0]["title"])
+        self.assertIn("Faith Goal", lines[1]["title"])
 
     def test_choose_primary_dimension(self) -> None:
         self.assertEqual(module.choose_primary_dimension(["mind", "faith"]), "mind")

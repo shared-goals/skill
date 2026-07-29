@@ -69,6 +69,8 @@ HERMES_CLI_PY = HERMES_AGENT_DIR / "cli.py"
 HERMES_VENV_PY = HERMES_AGENT_DIR / "venv" / "bin" / "python"
 SHARED_GOALS_DIR = Path.home() / ".hermes" / "skills" / "shared-goals" / "shared-goals"
 SHARED_GOALS_LOGS_DIR = SHARED_GOALS_DIR / "logs"
+SHARED_GOALS_STATE_DIR = SHARED_GOALS_DIR / "state"
+COMPASS_CONTEXT_STATE_FILE = SHARED_GOALS_STATE_DIR / "daily-compass-context.json"
 
 
 def load_env_file(env_path: Path | None = None) -> None:
@@ -173,6 +175,148 @@ def append_area_log_line(area_key: str, message: str, level: str = "INFO", run_i
 def now_iso_utc() -> str:
 	"""Return current UTC timestamp in ISO-8601 format."""
 	return datetime.now(timezone.utc).isoformat()
+
+
+def save_json_snapshot(path: Path, payload: dict[str, Any], logger: TraceLogger | None = None) -> None:
+	try:
+		path.parent.mkdir(parents=True, exist_ok=True)
+		path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+	except OSError as exc:
+		if logger is not None:
+			logger.log(f"Snapshot write failed: {exc}")
+		else:
+			raise
+
+
+def load_json_snapshot(path: Path) -> dict[str, Any] | None:
+	if not path.exists():
+		return None
+	try:
+		payload = json.loads(path.read_text(encoding="utf-8"))
+	except (OSError, ValueError):
+		return None
+	return payload if isinstance(payload, dict) else None
+
+
+def render_next_steps_from_compass_snapshot(snapshot: dict[str, Any]) -> str:
+	areas = snapshot.get("areas") if isinstance(snapshot, dict) else None
+	if not isinstance(areas, list):
+		areas = []
+
+	shared_area: dict[str, Any] | None = None
+	for area in areas:
+		if not isinstance(area, dict):
+			continue
+		if str(area.get("key", "")).strip() == "shared-goals":
+			shared_area = area
+			break
+
+	lines = ["## Next Steps", ""]
+	if not shared_area:
+		lines.append("- [ ] No next steps yet.")
+		return "\n".join(lines) + "\n"
+
+	shared_lines = shared_area.get("lines") if isinstance(shared_area, dict) else None
+	if not isinstance(shared_lines, list) or not shared_lines:
+		lines.append("- [ ] No next steps yet.")
+		return "\n".join(lines) + "\n"
+
+	for item in shared_lines:
+		if not isinstance(item, dict):
+			continue
+		title = str(item.get("title", "")).strip()
+		body = str(item.get("body", "")).strip()
+		if title:
+			lines.append(f"- [ ] {title}")
+		for step in split_steps(body):
+			lines.append(f"  - [ ] {step}")
+	return "\n".join(lines).rstrip() + "\n"
+
+
+def format_dim_label(value: str) -> str:
+	v = str(value or "").strip().lower()
+	return v[:1].upper() + v[1:] if v else "Unknown"
+
+
+def hunger_days(last_fed_at: Any) -> str:
+	text = str(last_fed_at or "").strip()
+	if not text:
+		return "never"
+	try:
+		ts = datetime.fromisoformat(text.replace("Z", "+00:00"))
+	except ValueError:
+		return "never"
+	if ts.tzinfo is None:
+		ts = ts.replace(tzinfo=timezone.utc)
+	return str(max(0, (datetime.now(timezone.utc) - ts).days))
+
+
+def split_steps(text: str) -> list[str]:
+	steps: list[str] = []
+	for raw in str(text or "").splitlines():
+		item = re.sub(r"^[-*]\s+", "", raw.strip())
+		if item:
+			steps.append(item)
+	if not steps and str(text or "").strip():
+		steps.append(str(text).strip())
+	return steps
+
+
+def render_shared_goals_section(payload: dict[str, Any], default_dimensions: list[str]) -> str:
+	dims = payload.get("dimensions") if isinstance(payload, dict) else None
+	if not isinstance(dims, list):
+		dims = []
+
+	by_name: dict[str, dict[str, Any]] = {}
+	order: list[str] = []
+	for block in dims:
+		if not isinstance(block, dict):
+			continue
+		name = str(block.get("dimension", "")).strip().lower()
+		if not name:
+			continue
+		by_name[name] = block
+
+	raw_order = payload.get("dimension_order") if isinstance(payload, dict) else None
+	if isinstance(raw_order, list):
+		for item in raw_order:
+			name = str(item).strip().lower()
+			if name and name not in order:
+				order.append(name)
+	for dim in default_dimensions:
+		if dim not in order:
+			order.append(dim)
+
+	lines = ["## Shared Goals", ""]
+	for dim in order:
+		block = by_name.get(dim, {})
+		fed = block.get("last_fed_at") if isinstance(block, dict) else None
+		fed_label = f"{hunger_days(fed)}d" if fed else "never"
+		lines.append(f"### {format_dim_label(dim)} ({fed_label})")
+		lines.append("")
+		goals = block.get("goals") if isinstance(block, dict) else None
+		if not isinstance(goals, list) or not goals:
+			lines.append("- No goals in this dimension.")
+			lines.append("")
+			continue
+
+		for goal in goals:
+			if not isinstance(goal, dict):
+				continue
+			goal_tag = str(goal.get("goal_tag", "")).strip()
+			goal_title = str(goal.get("goal_title", "")).strip()
+			headline = " ".join(part for part in [goal_title, goal_tag, f"hunger:{hunger_days(block.get('last_fed_at'))}d"] if part).strip()
+			if headline:
+				lines.append(f"- {headline}")
+			for step in split_steps(str(goal.get("next_step_text", ""))):
+				if goal_tag and goal_tag not in step:
+					step = f"{step} {goal_tag}".strip()
+				lines.append(f"  - [ ] {step}")
+		lines.append("")
+
+	if lines[-1] == "":
+		lines.pop()
+	return "\n".join(lines) + "\n"
 
 
 def make_line_context(title: str, url: str = "", body: str = "", signal: str = "") -> dict[str, str]:

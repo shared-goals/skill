@@ -2,3 +2,7 @@
 */logs/
 **/__pycache__/
 *.pyc
+shared-goals/state/
+areas/
+wtd-video-analyze/
+lesson-maker/

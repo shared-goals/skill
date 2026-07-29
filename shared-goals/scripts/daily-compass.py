@@ -23,12 +23,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from urllib.error import URLError
-from urllib.parse import urljoin
-from urllib.request import Request, urlopen
 
 from daily_compass_shared import (
 	AREA_SIGNAL_VERIFICATION_BASE_LINES,
+	COMPASS_CONTEXT_STATE_FILE,
 	AreaContext,
 	BOUNDARY_SCRIPT_TIMEOUT,
 	BoundaryAreaContext,
@@ -36,7 +34,6 @@ from daily_compass_shared import (
 	area_context_definition_text,
 	build_numbered_lines,
 	build_skill_index,
-	load_env_file,
 	resolve_hermes_argv,
 	resolve_non_tui_cli_argv,
 	sanitize_hermes_output,
@@ -52,6 +49,7 @@ from daily_compass_shared import (
 	serialize_boundary_area_base,
 	serialize_line_item,
 	project_boundary_to_area_context,
+	save_json_snapshot,
 	validate_json_response_strict,
 )
 
@@ -70,8 +68,6 @@ DEFAULT_DIMENSIONS = ["faith", "will", "feeling", "mind"]
 VALID_DIMENSIONS = set(DEFAULT_DIMENSIONS)
 DEFAULT_COMPASS_PROMPT = "Write one short phrase about today's Shared Goals direction based on area summaries."
 DEFAULT_SESSION_TITLE = "Daily Compass"
-PLATFORM_NEXT_STEPS_AREA_KEY = "platform-next-steps"
-PLATFORM_NEXT_STEPS_AREA_NAME = "Shared Goals Next Steps"
 
 PHASE_BOUNDARY = "Phase 1: boundary scripts"
 PHASE_PROMPTS = "Phase 2: signal prompts"
@@ -361,61 +357,6 @@ def load_areas(selected: list[str], logger: TraceLogger) -> list[AreaConfig]:
 		areas.append(AreaConfig(key=key, name=name, dimensions=dims, skill=skill, status=status, path=path))
 	logger.log(f"Loaded {len(areas)} active areas")
 	return areas
-
-
-def fetch_platform_compass_next_steps(logger: TraceLogger) -> list[dict[str, Any]]:
-	load_env_file()
-	base_url = os.environ.get("SHARED_GOALS_API_BASE_URL", "").strip()
-	agent_key_id = os.environ.get("SHARED_GOALS_AGENT_KEY_ID", "").strip()
-	if not base_url or not agent_key_id:
-		logger.log("Platform Compass feed skipped: missing SHARED_GOALS_API_BASE_URL or SHARED_GOALS_AGENT_KEY_ID")
-		return []
-
-	url = urljoin(base_url.rstrip("/") + "/", "api/v1/compass/next-steps")
-	request = Request(url, headers={"X-Agent-Key-Id": agent_key_id})
-	try:
-		with urlopen(request, timeout=10) as response:
-			payload = json.loads(response.read().decode("utf-8"))
-	except (OSError, URLError, ValueError) as exc:
-		logger.log(f"Platform Compass feed failed: {exc}")
-		return []
-
-	next_steps = payload.get("next_steps") if isinstance(payload, dict) else None
-	if not isinstance(next_steps, list):
-		logger.log("Platform Compass feed ignored: next_steps is missing or invalid")
-		return []
-	return [item for item in next_steps if isinstance(item, dict)]
-
-
-def build_platform_next_steps_area(next_steps: list[dict[str, Any]]) -> BoundaryAreaContext | None:
-	lines = []
-	for item in next_steps:
-		next_step = str(item.get("next_step", "")).strip()
-		if not next_step:
-			continue
-		goal_tag = str(item.get("goal_tag") or f"#{str(item.get('goal_id', '')).strip().removeprefix('#')}").strip()
-		title = f"{goal_tag} {next_step}".strip()
-		body_parts = [
-			str(item.get("goal_title", "")).strip(),
-			f"cadence={str(item.get('cadence', '')).strip()}",
-			f"minutes={str(item.get('time_minutes', '')).strip()}",
-			f"dimension={str(item.get('skill_tag', '')).strip()}",
-			f"source={str(item.get('source', 'platform')).strip()}",
-		]
-		body = "; ".join(part for part in body_parts if part and part.rsplit("=", 1)[-1])
-		lines.append({"title": title, "url": "", "body": body, "signal": ""})
-
-	if not lines:
-		return None
-	return {
-		"name": PLATFORM_NEXT_STEPS_AREA_NAME,
-		"key": PLATFORM_NEXT_STEPS_AREA_KEY,
-		"dimension": "will",
-		"status": "ok",
-		"reason": "",
-		"signal": "",
-		"lines": lines,
-	}
 
 
 def choose_primary_dimension(area_dimensions: list[str]) -> str:
@@ -960,8 +901,6 @@ def build_runtime(
 	areas: list[AreaConfig],
 	skill_index: dict[str, Path],
 	logger: TraceLogger,
-	*,
-	include_platform_feed: bool = False,
 ) -> CompassContext:
 	dimensions_order = parse_dimensions_order()
 	compass_prompt = resolve_compass_signal_prompt()
@@ -974,14 +913,6 @@ def build_runtime(
 	}
 
 	jobs: list[tuple[AreaConfig, Path, str, str]] = []
-	if include_platform_feed:
-		platform_area = build_platform_next_steps_area(fetch_platform_compass_next_steps(logger))
-		if platform_area is not None:
-			runtime["areas"].append(platform_area)
-			runtime["area_meta"][PLATFORM_NEXT_STEPS_AREA_KEY] = {
-				"script_to_run": "platform:/api/v1/compass/next-steps",
-				"area_prompt": "",
-			}
 	for area in areas:
 		skill_dir = skill_index.get(area.skill)
 		if not skill_dir:
@@ -1262,7 +1193,7 @@ def main() -> int:
 		log_phase(PHASE_BOUNDARY)
 		skill_index = build_skill_index(HERMES_SKILLS_DIR)
 		areas = load_areas(args.areas, logger)
-		runtime = build_runtime(areas, skill_index, logger, include_platform_feed=not bool(args.areas))
+		runtime = build_runtime(areas, skill_index, logger)
 		validate_runtime_or_raise(runtime)
 		
 		script_chunks: list[str] = ["\n"]
@@ -1294,6 +1225,8 @@ def main() -> int:
 			logger.log("phase 3 signal requests start")
 			enrich_runtime(runtime, logger, session)
 			validate_runtime_or_raise(runtime)
+
+		save_json_snapshot(COMPASS_CONTEXT_STATE_FILE, runtime_json_snapshot(runtime), logger)
 
 		log_phase(PHASE_RENDER)
 		context = build_render_context(runtime)

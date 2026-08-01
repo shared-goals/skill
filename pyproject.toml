@@ -1,0 +1,29 @@
+[project]
+name = "shared-goals-skill-dev"
+version = "0.1.0"
+description = "Developer tooling for Shared Goals Hermes skill scripts"
+requires-python = ">=3.9"
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3.2,<9",
+  "ruff>=0.6.9,<1",
+  "rich>=13.9.4,<14",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["shared-goals/scripts"]
+python_files = ["test_*.py"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

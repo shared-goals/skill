@@ -8,9 +8,8 @@ import sys
 import tempfile
 import unittest
 from datetime import datetime, timezone
-from unittest import mock
 from pathlib import Path
-
+from unittest import mock
 
 MODULE_PATH = Path(__file__).parent / "daily-compass.py"
 SHARED_GOALS_MODULE_PATH = Path(__file__).parent / "daily-shared-goals-status.py"
@@ -321,6 +320,17 @@ class DailyCompassPureTests(unittest.TestCase):
         self.assertIn("### Mind (never)", text)
         self.assertIn("No goals in this dimension.", text)
 
+    def test_preview_commit_fields_allows_editing_done_and_next_step(self) -> None:
+        with mock.patch("builtins.input", side_effect=["y", "Updated done", "y", "Updated next step"]):
+            done, next_step = sg_module._prompt_commit_field_preview(
+                goal_title="Shared Goals Development",
+                done="Original done",
+                next_step="Original next step",
+            )
+
+        self.assertEqual(done, "Updated done")
+        self.assertEqual(next_step, "Updated next step")
+
     def test_render_next_steps_from_compass_snapshot_uses_shared_goals_area(self) -> None:
         text = shared.render_next_steps_from_compass_snapshot(
             {
@@ -345,8 +355,8 @@ class DailyCompassPureTests(unittest.TestCase):
         self.assertIn("  - [ ] Run Plavdom pilot", text)
         self.assertIn("  - [ ] Update sg-prd README", text)
 
-        def test_parse_completed_goals_from_compass_text_groups_tasks_by_goal(self) -> None:
-                text = """## Next Steps
+    def test_parse_completed_goals_from_compass_text_groups_tasks_by_goal(self) -> None:
+        text = """## Next Steps
 
 - [ ] Placeholder
 
@@ -364,21 +374,21 @@ class DailyCompassPureTests(unittest.TestCase):
 - Writing Personal WTD text #sg-wtd-writing hunger:0d
     - [ ] Rename WTD context to project:wtd for Shared Goals development memory and PRD workflows #sg-wtd-writing
 """
-                parsed = sg_module.parse_completed_goals_from_compass_text(text)
+        parsed = sg_module.parse_completed_goals_from_compass_text(text)
 
-                self.assertEqual(len(parsed), 1)
-                self.assertEqual(parsed[0]["goal_id"], "sg-sharedgoals-dev")
-                self.assertEqual(
-                        parsed[0]["completed"],
-                        [
-                                "Unite Daily Compass with Shared Goals MVP development loop",
-                                "Make Recommended Next Steps and Balanced Shared Goals as view of Compass in Markdown and Telegram",
-                        ],
-                )
-                self.assertEqual(
-                        parsed[0]["incomplete"],
-                        ["Update sg-prd skill README to satisfy the current use case"],
-                )
+        self.assertEqual(len(parsed), 1)
+        self.assertEqual(parsed[0]["goal_id"], "sg-sharedgoals-dev")
+        self.assertEqual(
+            parsed[0]["completed"],
+            [
+                "Unite Daily Compass with Shared Goals MVP development loop",
+                "Make Recommended Next Steps and Balanced Shared Goals as view of Compass in Markdown and Telegram",
+            ],
+        )
+        self.assertEqual(
+            parsed[0]["incomplete"],
+            ["Update sg-prd skill README to satisfy the current use case"],
+        )
 
     def test_build_platform_shared_goals_lines_uses_hunger_order(self) -> None:
         lines = sg_module.build_platform_lines(

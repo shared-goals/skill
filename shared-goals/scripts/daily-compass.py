@@ -469,6 +469,15 @@ def json_area_signal_contract(area_payload: dict[str, Any]) -> str:
 
 def build_area_signal_prompt(area_prompt: str, area_payload: dict[str, Any]) -> str:
 	"""Compose a structured area prompt following GOAL→PROCEDURE→CONTRACT→INPUT hierarchy."""
+	area_key = str(area_payload.get("key", "")).strip()
+	shared_goals_rules = ""
+	if area_key == "shared-goals":
+		shared_goals_rules = (
+			"\n\nShared Goals Next Steps requirements:\n"
+			"- For area key 'shared-goals', each LineContext signal must be one actionable task line.\n"
+			"- Prioritize hunger-critical goals and keep the set compact (target 3-5 tasks).\n"
+			"- Do not summarize counts or categories in line signals.\n"
+		)
 	contract = (
 		json_area_signal_contract(area_payload)
 		if area_prompt_requests_json(area_prompt)
@@ -478,7 +487,7 @@ def build_area_signal_prompt(area_prompt: str, area_payload: dict[str, Any]) -> 
 		"GOAL:\n"
 		"Return an updated AreaContext JSON object using SIGNAL GUIDANCE and VERIFICATION CHECKS.\n\n"
 		"SIGNAL GUIDANCE:\n"
-		f"{area_prompt}\n\n"
+		f"{area_prompt}{shared_goals_rules}\n\n"
 		f"{contract}\n\n"
 		"Input AreaContext JSON:\n"
 		f"{pretty_json(area_payload)}"

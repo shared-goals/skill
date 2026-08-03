@@ -331,7 +331,7 @@ class DailyCompassPureTests(unittest.TestCase):
         self.assertEqual(done, "Updated done")
         self.assertEqual(next_step, "Updated next step")
 
-    def test_render_next_steps_from_compass_snapshot_uses_shared_goals_area(self) -> None:
+    def test_render_next_steps_from_compass_snapshot_uses_shared_goals_line_signals(self) -> None:
         text = shared.render_next_steps_from_compass_snapshot(
             {
                 "areas": [
@@ -342,8 +342,38 @@ class DailyCompassPureTests(unittest.TestCase):
                                 "title": "Shared Goals Development #sg-sharedgoals-dev",
                                 "url": "",
                                 "body": "Run Plavdom pilot\nUpdate sg-prd README",
+                                "signal": "Run Plavdom pilot with one concrete partner",
+                            },
+                            {
+                                "title": "Music #sg-music",
+                                "url": "",
+                                "body": "Choose tracks",
                                 "signal": "",
-                            }
+                            },
+                            {
+                                "title": "Photo #sg-photo",
+                                "url": "",
+                                "body": "Develop workflow",
+                                "signal": "Build Photos workflow for this week",
+                            },
+                            {
+                                "title": "Homelab #sg-homelab",
+                                "url": "",
+                                "body": "Configure infrastructure",
+                                "signal": "Stabilize Homelab core infrastructure",
+                            },
+                            {
+                                "title": "Extra #sg-extra",
+                                "url": "",
+                                "body": "Should be hidden",
+                                "signal": "",
+                            },
+                            {
+                                "title": "Overflow #sg-overflow",
+                                "url": "",
+                                "body": "Too many",
+                                "signal": "Must be trimmed by cap",
+                            },
                         ],
                     }
                 ]
@@ -351,9 +381,32 @@ class DailyCompassPureTests(unittest.TestCase):
         )
 
         self.assertIn("## Next Steps", text)
-        self.assertIn("- [ ] Shared Goals Development #sg-sharedgoals-dev", text)
-        self.assertIn("  - [ ] Run Plavdom pilot", text)
-        self.assertIn("  - [ ] Update sg-prd README", text)
+        self.assertIn("- [ ] Run Plavdom pilot with one concrete partner", text)
+        self.assertIn("- [ ] Choose tracks", text)
+        self.assertIn("- [ ] Build Photos workflow for this week", text)
+        self.assertIn("- [ ] Stabilize Homelab core infrastructure", text)
+        self.assertIn("- [ ] Should be hidden", text)
+        self.assertNotIn("- [ ] Overflow #sg-overflow", text)
+        self.assertNotIn("Must be trimmed by cap", text)
+
+        next_step_lines = [line for line in text.splitlines() if line.startswith("- [ ] ")]
+        self.assertEqual(len(next_step_lines), 5)
+
+    def test_build_area_signal_prompt_shared_goals_enforces_actionable_line_signals(self) -> None:
+        prompt = module.build_area_signal_prompt(
+            "Focus on hunger goals.",
+            {
+                "name": "Shared Goals",
+                "key": "shared-goals",
+                "dimension": "faith",
+                "signal": "",
+                "lines": [],
+            },
+        )
+
+        self.assertIn("For area key 'shared-goals'", prompt)
+        self.assertIn("3-5", prompt)
+        self.assertIn("each LineContext signal must be one actionable task line", prompt)
 
     def test_parse_completed_goals_from_compass_text_groups_tasks_by_goal(self) -> None:
         text = """## Next Steps

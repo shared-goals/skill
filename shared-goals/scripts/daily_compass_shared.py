@@ -71,6 +71,7 @@ SHARED_GOALS_DIR = Path.home() / ".hermes" / "skills" / "shared-goals" / "shared
 SHARED_GOALS_LOGS_DIR = SHARED_GOALS_DIR / "logs"
 SHARED_GOALS_STATE_DIR = SHARED_GOALS_DIR / "state"
 COMPASS_CONTEXT_STATE_FILE = SHARED_GOALS_STATE_DIR / "daily-compass-context.json"
+NEXT_STEPS_MAX_ITEMS = 5
 
 
 def load_env_file(env_path: Path | None = None) -> None:
@@ -221,15 +222,26 @@ def render_next_steps_from_compass_snapshot(snapshot: dict[str, Any]) -> str:
 		lines.append("- [ ] No next steps yet.")
 		return "\n".join(lines) + "\n"
 
+	shown = 0
 	for item in shared_lines:
+		if shown >= NEXT_STEPS_MAX_ITEMS:
+			break
 		if not isinstance(item, dict):
 			continue
-		title = str(item.get("title", "")).strip()
-		body = str(item.get("body", "")).strip()
-		if title:
-			lines.append(f"- [ ] {title}")
-		for step in split_steps(body):
-			lines.append(f"  - [ ] {step}")
+
+		# Prefer explicit line signal as the actionable task.
+		task = str(item.get("signal", "")).strip()
+		if not task:
+			body = str(item.get("body", "")).strip()
+			steps = split_steps(body)
+			if steps:
+				task = steps[0]
+		if not task:
+			task = str(item.get("title", "")).strip()
+
+		if task:
+			lines.append(f"- [ ] {task}")
+			shown += 1
 	return "\n".join(lines).rstrip() + "\n"
 
 

@@ -319,7 +319,7 @@ def render_shared_goals_section(payload: dict[str, Any], default_dimensions: lis
 			goal_title = str(goal.get("goal_title", "")).strip()
 			headline = " ".join(part for part in [goal_title, goal_tag, f"hunger:{hunger_days(block.get('last_fed_at'))}d"] if part).strip()
 			if headline:
-				lines.append(f"- {headline}")
+				lines.append(f"- **{headline}**")
 			for step in split_steps(str(goal.get("next_step_text", ""))):
 				if goal_tag and goal_tag not in step:
 					step = f"{step} {goal_tag}".strip()

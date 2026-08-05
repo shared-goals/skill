@@ -292,6 +292,11 @@ class DailyCompassPureTests(unittest.TestCase):
                                     "goal_tag": "#sg-homelab",
                                     "goal_title": "Homelab",
                                     "next_step_text": "Configure stable homelab infrastructure",
+                                },
+                                {
+                                    "goal_tag": "#sg-music",
+                                    "goal_title": "Music",
+                                    "next_step_text": "Develop Music autodiscovery and organization with SoulBeets",
                                 }
                             ],
                         }
@@ -306,10 +311,14 @@ class DailyCompassPureTests(unittest.TestCase):
         self.assertLess(text.index("### Mind"), text.index("### Faith"))
         self.assertLess(text.index("### Faith"), text.index("### Will"))
         self.assertLess(text.index("### Will"), text.index("### Feeling"))
-        self.assertIn("- Homelab #sg-homelab hunger:2d", text)
+        self.assertIn("- **Homelab #sg-homelab hunger:2d**", text)
         self.assertIn("- [ ] Configure stable homelab infrastructure #sg-homelab", text)
+        self.assertIn("- **Music #sg-music hunger:2d**", text)
+        self.assertIn("- [ ] Develop Music autodiscovery and organization with SoulBeets #sg-music", text)
+        self.assertIn("  - [ ] Configure stable homelab infrastructure #sg-homelab\n- **Music #sg-music hunger:2d**", text)
+        self.assertNotIn("\n\n- **Music #sg-music hunger:2d**", text)
         self.assertIn("No goals in this dimension.", text)
-        self.assertIn("\n\n- Homelab", text)
+        self.assertIn("\n\n- **Homelab", text)
 
     def test_render_shared_goals_section_handles_empty(self) -> None:
         text = sg_module.render_shared_goals_section({"dimensions": []})

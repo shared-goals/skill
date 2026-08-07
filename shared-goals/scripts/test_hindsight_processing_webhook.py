@@ -58,6 +58,26 @@ class HindsightProcessingWebhookTests(unittest.TestCase):
         self.assertIsNone(out)
         self.assertEqual(state["status"], "processing")
 
+    def test_retain_completed_does_not_finalize_even_when_queue_quiet(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "state.json"
+            state_path.write_text(json.dumps({"status": "processing", "started_at": "t0"}), encoding="utf-8")
+            out = mod.run_for_event(
+                {"event": "retain.completed", "operation_id": "op-retain"},
+                state_path=state_path,
+                counts_fn=lambda *_: {
+                    "retain_pending": 0,
+                    "retain_processing": 0,
+                    "consolidation_pending": 0,
+                    "consolidation_processing": 0,
+                    "total": 0,
+                },
+            )
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+
+        self.assertIsNone(out)
+        self.assertEqual(state["status"], "processing")
+
     def test_marks_completed_when_queue_quiet(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             state_path = Path(tmp) / "state.json"

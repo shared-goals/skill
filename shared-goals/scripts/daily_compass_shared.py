@@ -46,7 +46,7 @@ AREA_SIGNAL_VERIFICATION_BASE_LINES = [
 	"No prose before or after output AreaContext JSON.",
 	"No markdown fences or comments.",
 	"AreaContext `signal` is not more than 70 chars.",
-	"LineContext `signal` is not more than 50 chars.",
+	"LineContext `signal` is not more than the configured area limit.",
 	"Do not invent facts outside input AreaContext.",
 ]
 
@@ -212,7 +212,7 @@ def render_next_steps_from_compass_snapshot(snapshot: dict[str, Any]) -> str:
 			shared_area = area
 			break
 
-	lines = ["## Next Steps", ""]
+	lines = ["## Logos", ""]
 	if not shared_area:
 		lines.append("- [ ] No next steps yet.")
 		return "\n".join(lines) + "\n"
@@ -224,7 +224,7 @@ def render_next_steps_from_compass_snapshot(snapshot: dict[str, Any]) -> str:
 
 	shown = 0
 	for item in shared_lines:
-		if shown >= NEXT_STEPS_MAX_ITEMS:
+		if shown >= 1:
 			break
 		if not isinstance(item, dict):
 			continue

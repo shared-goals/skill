@@ -311,7 +311,7 @@ def _read_next_steps(path: Path) -> str:
             heading = s[3:].strip().lower()
             if in_section:
                 break
-            in_section = heading == "next steps"
+            in_section = heading == "logos"
             continue
         if in_section:
             out.append(line.rstrip())
@@ -322,6 +322,6 @@ def update_compass_markdown(payload: dict[str, Any], path: Path) -> None:
     next_steps = _read_next_steps(path)
     if not next_steps:
         next_steps = "- [ ] No next steps yet."
-    markdown = "\n".join(["## Next Steps", "", next_steps, "", render_shared_goals_section(payload).strip()]) + "\n"
+    markdown = "\n".join(["## Logos", "", next_steps, "", render_shared_goals_section(payload).strip()]) + "\n"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(markdown, encoding="utf-8")

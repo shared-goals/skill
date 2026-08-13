@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import tempfile
 import unittest
@@ -33,6 +34,56 @@ sg_spec.loader.exec_module(sg_module)  # type: ignore[attr-defined]
 
 
 class DailyCompassPureTests(unittest.TestCase):
+    def test_shared_goals_reflection_runs_once_for_hungriest_goal(self) -> None:
+        calls: list[tuple[str, dict[str, str]]] = []
+        prompt = "Work on the selected goal with the next concrete action first. #sg-photo"
+
+        def fake_reflect(query: str, _task: object, _logger: object) -> str:
+            calls.append(("hindsight_reflect", {"query": query}))
+            return json.dumps({"result": prompt})
+
+        task = module.AreaSignalTask(
+            index=0,
+            key="shared-goals",
+            label="area:shared-goals",
+            area={
+                "name": "Shared Goals",
+                "key": "shared-goals",
+                "dimension": "faith",
+                "status": "ok",
+                "reason": "",
+                "signal": "",
+                "lines": [
+                    {"title": "Less hungry #sg-less hunger:6d", "body": "Later", "signal": ""},
+                    {"title": "Hungry #sg-photo hunger:14d", "body": "Do photos", "signal": ""},
+                ],
+            },
+            area_prompt="",
+            prompt="",
+            signal_max_chars=2000,
+        )
+        logger = module.TraceLogger(verbose=False)
+        try:
+            with mock.patch.object(
+                module,
+                "run_hermes_hindsight_reflect",
+                side_effect=fake_reflect,
+            ):
+                result = module.run_shared_goals_reflection(task, logger)
+        finally:
+            if hasattr(logger, "_fh") and not logger._fh.closed:
+                logger._fh.close()
+
+        self.assertTrue(result.ok)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "hindsight_reflect")
+        self.assertIn("Hungry #sg-photo hunger:14d", calls[0][1]["query"])
+        self.assertEqual(result.area["lines"][1]["signal"], prompt)
+
+    def test_json_area_signal_contract_uses_area_limit(self) -> None:
+        contract = module.json_area_signal_contract({"signal_max_chars": 2000})
+        self.assertIn("LineContext `signal` is not more than 2000 chars.", contract)
+
     def test_enrich_runtime_runs_area_batch_before_compass_with_shared_session(self) -> None:
         runtime = {
             "signal_prompt": "Compass prompt",
@@ -389,21 +440,21 @@ class DailyCompassPureTests(unittest.TestCase):
             }
         )
 
-        self.assertIn("## Next Steps", text)
+        self.assertIn("## Logos", text)
         self.assertIn("- [ ] Run Plavdom pilot with one concrete partner", text)
-        self.assertIn("- [ ] Choose tracks", text)
-        self.assertIn("- [ ] Build Photos workflow for this week", text)
-        self.assertIn("- [ ] Stabilize Homelab core infrastructure", text)
-        self.assertIn("- [ ] Should be hidden", text)
+        self.assertNotIn("- [ ] Choose tracks", text)
+        self.assertNotIn("- [ ] Build Photos workflow for this week", text)
+        self.assertNotIn("- [ ] Stabilize Homelab core infrastructure", text)
+        self.assertNotIn("- [ ] Should be hidden", text)
         self.assertNotIn("- [ ] Overflow #sg-overflow", text)
         self.assertNotIn("Must be trimmed by cap", text)
 
         next_step_lines = [line for line in text.splitlines() if line.startswith("- [ ] ")]
-        self.assertEqual(len(next_step_lines), 5)
+        self.assertEqual(len(next_step_lines), 1)
 
-    def test_build_area_signal_prompt_shared_goals_enforces_actionable_line_signals(self) -> None:
+    def test_build_area_signal_prompt_uses_area_guidance_without_special_cases(self) -> None:
         prompt = module.build_area_signal_prompt(
-            "Focus on hunger goals.",
+            "Select one hungry goal and prepare a prompt.",
             {
                 "name": "Shared Goals",
                 "key": "shared-goals",
@@ -413,9 +464,8 @@ class DailyCompassPureTests(unittest.TestCase):
             },
         )
 
-        self.assertIn("For area key 'shared-goals'", prompt)
-        self.assertIn("3-5", prompt)
-        self.assertIn("each LineContext signal must be one actionable task line", prompt)
+        self.assertIn("Select one hungry goal and prepare a prompt.", prompt)
+        self.assertNotIn("Shared Goals Logos requirements", prompt)
 
     def test_parse_completed_goals_from_compass_text_groups_tasks_by_goal(self) -> None:
         text = """## Next Steps

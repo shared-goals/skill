@@ -55,6 +55,8 @@ from daily_compass_shared import (
 
 
 HOME = Path.home()
+HERMES_AGENT_DIR = HOME / ".hermes" / "hermes-agent"
+HERMES_VENV_PY = HERMES_AGENT_DIR / "venv" / "bin" / "python"
 HERMES_SKILLS_DIR = HOME / ".hermes" / "skills"
 SHARED_GOALS_DIR = HERMES_SKILLS_DIR / "shared-goals" / "shared-goals"
 SHARED_GOALS_SKILL = SHARED_GOALS_DIR / "SKILL.md"
@@ -95,6 +97,7 @@ class AreaSignalTask:
 	area: BoundaryAreaContext
 	area_prompt: str
 	prompt: str
+	signal_max_chars: int = 50
 
 
 @dataclass
@@ -113,6 +116,7 @@ class AreaConfig:
 	skill: str
 	status: str
 	path: Path
+	signal_max_chars: int
 
 
 @dataclass
@@ -354,7 +358,21 @@ def load_areas(selected: list[str], logger: TraceLogger) -> list[AreaConfig]:
 		if not skill:
 			logger.log(f"Skip area '{key}': missing skill")
 			continue
-		areas.append(AreaConfig(key=key, name=name, dimensions=dims, skill=skill, status=status, path=path))
+		try:
+			signal_max_chars = max(50, int(cfg.get("signal_max_chars", "50")))
+		except ValueError:
+			signal_max_chars = 50
+		areas.append(
+			AreaConfig(
+				key=key,
+				name=name,
+				dimensions=dims,
+				skill=skill,
+				status=status,
+				path=path,
+				signal_max_chars=signal_max_chars,
+			)
+		)
 	logger.log(f"Loaded {len(areas)} active areas")
 	return areas
 
@@ -405,6 +423,7 @@ def build_error_area(area: AreaConfig, reason: str) -> BoundaryAreaContext:
 		"reason": reason,
 		"signal": "",
 		"lines": [],
+		"signal_max_chars": area.signal_max_chars,
 	}
 
 
@@ -459,7 +478,11 @@ def area_prompt_requests_json(prompt: str) -> bool:
 
 def json_area_signal_contract(area_payload: dict[str, Any]) -> str:
 	"""Standardized guardrails for JSON area signal round-trip."""
-	checks = list(AREA_SIGNAL_VERIFICATION_BASE_LINES)
+	max_chars = int(area_payload.get("signal_max_chars", 50) or 50)
+	checks = [
+		line.replace("the configured area limit", f"{max_chars} chars")
+		for line in AREA_SIGNAL_VERIFICATION_BASE_LINES
+	]
 	return (
 		f"{area_context_definition_text()}\n\n"
 		"VERIFICATION CHECKS:\n"
@@ -469,15 +492,6 @@ def json_area_signal_contract(area_payload: dict[str, Any]) -> str:
 
 def build_area_signal_prompt(area_prompt: str, area_payload: dict[str, Any]) -> str:
 	"""Compose a structured area prompt following GOAL→PROCEDURE→CONTRACT→INPUT hierarchy."""
-	area_key = str(area_payload.get("key", "")).strip()
-	shared_goals_rules = ""
-	if area_key == "shared-goals":
-		shared_goals_rules = (
-			"\n\nShared Goals Next Steps requirements:\n"
-			"- For area key 'shared-goals', each LineContext signal must be one actionable task line.\n"
-			"- Prioritize hunger-critical goals and keep the set compact (target 3-5 tasks).\n"
-			"- Do not summarize counts or categories in line signals.\n"
-		)
 	contract = (
 		json_area_signal_contract(area_payload)
 		if area_prompt_requests_json(area_prompt)
@@ -487,7 +501,7 @@ def build_area_signal_prompt(area_prompt: str, area_payload: dict[str, Any]) -> 
 		"GOAL:\n"
 		"Return an updated AreaContext JSON object using SIGNAL GUIDANCE and VERIFICATION CHECKS.\n\n"
 		"SIGNAL GUIDANCE:\n"
-		f"{area_prompt}{shared_goals_rules}\n\n"
+		f"{area_prompt}\n\n"
 		f"{contract}\n\n"
 		"Input AreaContext JSON:\n"
 		f"{pretty_json(area_payload)}"
@@ -770,6 +784,9 @@ def run_area_signal_job(
 	if not session.hermes_argv:
 		return SignalJobResult(key=area_key, area=None, reason="hermes_unavailable", ok=False)
 
+	if area_key == "shared-goals":
+		return run_shared_goals_reflection(task, logger)
+
 	if area_prompt_requests_json(area_prompt):
 		response_text, elapsed = run_hermes_raw(prompt, model, provider, logger, label, session)
 		log_text_block(logger, f"Raw area response [{label}]", response_text, elapsed=elapsed)
@@ -809,6 +826,73 @@ def run_area_signal_job(
 	return SignalJobResult(key=area_key, area=updated_area, reason="valid", ok=True)
 
 
+def run_shared_goals_reflection(task: AreaSignalTask, logger: TraceLogger) -> SignalJobResult:
+	"""Reflect once on the hungriest Shared Goal and store the prompt in signal."""
+	lines = task.area.get("lines", [])
+	if not isinstance(lines, list) or not lines:
+		return SignalJobResult(key=task.key, area=None, reason="shared_goals_empty", ok=False)
+
+	def hunger_days(line: dict[str, Any]) -> int:
+		match = re.search(r"hunger:(\d+)d", str(line.get("title", "")))
+		return int(match.group(1)) if match else -1
+
+	candidates = [line for line in lines if isinstance(line, dict)]
+	selected = max(enumerate(candidates), key=lambda item: (hunger_days(item[1]), -item[0]))
+	selected_index, selected_line = selected
+	goal_title = str(selected_line.get("title", "")).strip()
+	goal_body = str(selected_line.get("body", "")).strip()
+	query = (
+		"Reflect on this Shared Goal and prepare one detailed English prompt for the next "
+		"Hermes agent action. Use relevant memories about prior decisions, preferences, "
+		"blockers, and current context, but keep the authoritative next steps as the task "
+		"boundary. Return only the prompt, without analysis, citations, headings, or summary.\n\n"
+		f"Selected goal: {goal_title}\n"
+		f"Authoritative next steps:\n{goal_body}"
+	)
+	logger.log(f"Hindsight reflect start: {goal_title} (hunger={hunger_days(selected_line)}d)")
+	try:
+		response = run_hermes_hindsight_reflect(query, task, logger)
+		try:
+			payload = json.loads(response)
+		except json.JSONDecodeError:
+			payload = {"result": response}
+		prompt = str(payload.get("result", payload.get("text", ""))).strip()
+		if not prompt or prompt.startswith("[ERROR") or prompt.startswith("{"):
+			raise RuntimeError(prompt or "empty reflection")
+		prompt = prompt[: task.signal_max_chars].rstrip()
+		updated_area = hydrate_boundary_area(task.area)
+		updated_lines = [dict(line) for line in candidates]
+		updated_lines[selected_index]["signal"] = prompt
+		updated_area["lines"] = updated_lines
+		logger.log(f"Hindsight reflect done: {len(prompt)} chars")
+		return SignalJobResult(key=task.key, area=updated_area, reason="hindsight_reflected", ok=True)
+	except Exception as exc:
+		logger.log(f"Hindsight reflect failed: {exc}")
+		return SignalJobResult(key=task.key, area=None, reason="hindsight_reflect_failed", ok=False)
+
+
+def run_hermes_hindsight_reflect(query: str, task: AreaSignalTask, logger: TraceLogger) -> str:
+	"""Ask Hermes to invoke hindsight_reflect exactly once, then return its result."""
+	hermes_argv = resolve_hermes_argv()
+	if not hermes_argv:
+		raise RuntimeError("Hermes command unavailable")
+	request = (
+		"Use the `hindsight_reflect` tool exactly once with the query below. "
+		"Do not answer from your own reasoning and do not call any other tool. "
+		"After the tool returns, output only its result text.\n\n"
+		f"{query}"
+	)
+	cmd = [*hermes_argv, "-t", "memory", "-z", request]
+	logger.log("Hermes direct hindsight_reflect request start (toolset=memory)")
+	result = run_subprocess_text(cmd, timeout=180, env=os.environ.copy())
+	if result.returncode != 0:
+		err = (result.stderr or result.stdout).strip()[:500]
+		logger.log(f"Hermes direct hindsight_reflect failed: {err}")
+		raise RuntimeError(err or "Hermes reflect request failed")
+	logger.log("Hermes direct hindsight_reflect request done")
+	return sanitize_hermes_output(result.stdout or "")
+
+
 def build_area_signal_tasks(runtime: CompassContext) -> list[AreaSignalTask]:
 	area_meta = runtime.get("area_meta", {}) if isinstance(runtime.get("area_meta"), dict) else {}
 	tasks: list[AreaSignalTask] = []
@@ -822,6 +906,7 @@ def build_area_signal_tasks(runtime: CompassContext) -> list[AreaSignalTask]:
 			continue
 		area_copy = hydrate_boundary_area(area)
 		area_payload = serialize_area_for_llm(area_copy)
+		area_payload["signal_max_chars"] = int(meta.get("signal_max_chars", 50) or 50)
 		prompt = build_area_signal_prompt(area_prompt, area_payload)
 		label = f"area:{key or 'unknown'}"
 		tasks.append(
@@ -832,6 +917,7 @@ def build_area_signal_tasks(runtime: CompassContext) -> list[AreaSignalTask]:
 				area=area_copy,
 				area_prompt=area_prompt,
 				prompt=prompt,
+				signal_max_chars=int(meta.get("signal_max_chars", 50) or 50),
 			)
 		)
 	return tasks
@@ -935,7 +1021,11 @@ def build_runtime(
 		if not script.exists():
 			logger.log(f"Area '{area.key}': missing boundary script {script}")
 			runtime["areas"].append(build_error_area(area, "boundary_script_missing"))
-			runtime["area_meta"][area.key] = {"script_to_run": str(script), "area_prompt": area_prompt}
+			runtime["area_meta"][area.key] = {
+				"script_to_run": str(script),
+				"area_prompt": area_prompt,
+				"signal_max_chars": area.signal_max_chars,
+			}
 			continue
 
 		jobs.append((area, script, area_prompt, str(script)))
@@ -953,7 +1043,11 @@ def build_runtime(
 			for fut in as_completed(futures):
 				area, area_prompt, script_s = futures[fut]
 				result = fut.result()
-				runtime["area_meta"][area.key] = {"script_to_run": script_s, "area_prompt": area_prompt}
+				runtime["area_meta"][area.key] = {
+					"script_to_run": script_s,
+					"area_prompt": area_prompt,
+					"signal_max_chars": area.signal_max_chars,
+				}
 				logger.log(f"Run boundary: {area.key} -> {script_s}")
 				logger.log(f"Area log: {LOGS_DIR / f'{logger.path.stem}.{area.key}.log'}")
 				if not result.ok:

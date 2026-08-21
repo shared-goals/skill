@@ -5,10 +5,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -34,6 +35,24 @@ sg_spec.loader.exec_module(sg_module)  # type: ignore[attr-defined]
 
 
 class DailyCompassPureTests(unittest.TestCase):
+    def test_trace_logger_removes_logs_older_than_seven_days(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            logs_dir = Path(tmp_dir)
+            expired_log = logs_dir / "expired.log"
+            recent_log = logs_dir / "recent.log"
+            expired_log.write_text("expired", encoding="utf-8")
+            recent_log.write_text("recent", encoding="utf-8")
+            expired_time = (datetime.now() - timedelta(days=8)).timestamp()
+            os.utime(expired_log, (expired_time, expired_time))
+
+            with mock.patch.object(module, "LOGS_DIR", logs_dir):
+                logger = module.TraceLogger(verbose=False)
+                logger.write()
+
+            self.assertFalse(expired_log.exists())
+            self.assertTrue(recent_log.exists())
+            self.assertTrue(logger.path.exists())
+
     def test_shared_goals_reflection_runs_once_for_hungriest_goal(self) -> None:
         calls: list[tuple[str, dict[str, str]]] = []
         prompt = "Work on the selected goal with the next concrete action first. #sg-photo"
@@ -79,6 +98,10 @@ class DailyCompassPureTests(unittest.TestCase):
         self.assertEqual(calls[0][0], "hindsight_reflect")
         self.assertIn("Hungry #sg-photo hunger:14d", calls[0][1]["query"])
         self.assertEqual(result.area["lines"][1]["signal"], prompt)
+        self.assertEqual(result.area["lines"][1]["body"], "Do photos")
+        # Non-selected goals stay visible by title but drop their body text.
+        self.assertEqual(result.area["lines"][0]["body"], "")
+        self.assertEqual(result.area["lines"][0]["signal"], "")
 
     def test_json_area_signal_contract_uses_area_limit(self) -> None:
         contract = module.json_area_signal_contract({"signal_max_chars": 2000})
@@ -628,6 +651,38 @@ Ignore.
         payload, reason = shared.validate_json_response_strict(text, "weather")
         self.assertIsNone(payload)
         self.assertEqual(reason, "schema_error")
+
+    def test_build_render_context_wraps_shared_goals_prompt_in_expandable_blockquote(self) -> None:
+        context = module.build_render_context(
+            {
+                "dimensions": ["faith"],
+                "areas": [
+                    {
+                        "name": "Shared Goals",
+                        "key": "shared-goals",
+                        "dimension": "faith",
+                        "signal": "",
+                        "lines": [
+                            {
+                                "title": "Music #sg-music",
+                                "url": "",
+                                "body": "Music next step",
+                                "signal": "Goal: Finish the music workflow.\nClose the task.",
+                            }
+                        ],
+                    }
+                ],
+                "signal": "",
+            }
+        )
+
+        line = context["dimensions"][0]["areas"][0]["lines"][0]
+        self.assertEqual(
+            line["display_signal"],
+            "\n**> Goal: Finish the music workflow. Close the task.||",
+        )
+        rendered = module.render_template(context)
+        self.assertIn("**> Goal: Finish the music workflow. Close the task.||", rendered)
 
     def test_validate_json_response_strict_rejects_extra_line_key(self) -> None:
         text = (

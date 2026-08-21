@@ -13,7 +13,7 @@
 {if area.lines}
 
 {foreach line in area.lines}
-- {if line.url}[{line.title}]({line.url}){else}{line.title}{/if}{if line.body}: {line.body}{/if}{if line.signal} — *{line.signal}*{/if}
+- {if line.url}[{line.title}]({line.url}){else}{line.title}{/if}{if line.body}: {line.body}{/if}{if line.display_signal} — {line.display_signal}{else}{if line.signal} — *{line.signal}*{/if}{/if}
 {/foreach}
 {else}
 - [GUARD] no lines returned for this area

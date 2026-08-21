@@ -170,10 +170,10 @@ Write one short phrase about today's Shared Goals direction based on the prompt 
 
 ## Area signal
 
-Select one most-hungry Shared Goal and prepare its next step for execution.
+Select one most-hungry Shared Goal and keep only its line for execution.
 
-1. Analyze the AreaContext `signal` and prioritize exactly one Shared Goal by hunger and contract pressure.
-2. Keep only that goal's next steps as the material for the recommendation.
-3. Analyze those next steps with Hindsight `reflect` to prepare a detailed English prompt.
-4. Write one LineContext `signal` as a copyable prompt for the next Hermes agent step.
-5. Preserve the selected goal hashtag in the prompt.
+1. Prioritize exactly one Shared Goal by hunger and contract pressure.
+2. Delete every other LineContext; keep only the selected goal's line.
+3. Keep the selected goal's LineContext `signal` exactly as provided — it is already a copyable prompt for the next Hermes agent step, prepared deterministically by the daily-compass script's own Hindsight reflect call, not by this prompt.
+4. Preserve the selected goal's hashtag in the title.
+5. Keep AreaContext `signal` empty.

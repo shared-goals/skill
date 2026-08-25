@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic completion hook for Hindsight retain/consolidation events.
+"""Deterministic completion hook for Hindsight ingest events.
 
 Behavior:
 - accepts global Hindsight webhook events
@@ -23,14 +23,14 @@ SHARED_SCRIPTS = Path(__file__).resolve().parents[2] / "shared-goals" / "scripts
 if str(SHARED_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SHARED_SCRIPTS))
 
-from wtd_processing_state import load_state, save_state, utc_now_iso
+from hindsight_ingest_state import load_state, save_state, utc_now_iso
 
-STATE_PATH = Path(__file__).resolve().parents[2] / "shared-goals" / "runtime" / "wtd-processing-state.json"
-LOG_PATH = Path.home() / ".hermes" / "logs" / "hindsight-processing-webhook.log"
+STATE_PATH = Path(__file__).resolve().parents[2] / "shared-goals" / "runtime" / "hindsight-ingest-state.json"
+LOG_PATH = Path.home() / ".hermes" / "logs" / "hindsight-ingest-completion-hook.log"
 ACTIVE_STATUSES = ("pending", "processing", "running")
 IGNORED_ACTIVE_TYPES = tuple(
     t.strip()
-    for t in os.environ.get("WTD_COMPLETION_IGNORE_TYPES", "webhook_delivery").split(",")
+    for t in os.environ.get("HINDSIGHT_INGEST_COMPLETION_IGNORE_TYPES", "webhook_delivery").split(",")
     if t.strip()
 )
 MAX_OPERATIONS_LIMIT = 100
@@ -69,7 +69,7 @@ def _log_decision(
         parts.append("counts=" + ",".join(f"{k}={v}" for k, v in sorted(counts.items())))
     if note:
         parts.append(f"note={note}")
-    line = f"{_local_ts()} INFO hindsight_processing_webhook: " + " ".join(parts)
+    line = f"{_local_ts()} INFO hindsight_ingest_completion_hook: " + " ".join(parts)
     try:
         LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         with LOG_PATH.open("a", encoding="utf-8") as fh:
@@ -190,7 +190,7 @@ def run_for_event(
     )
 
     return (
-        "WTD processing completed. Status: completed. "
+        "Hindsight ingest completed. Status: completed. "
         f"Event: {event}. Operation: {state['completion_operation_id'] or 'n/a'}."
     )
 
@@ -219,7 +219,7 @@ def main() -> None:
     try:
         message = run_for_event(payload)
     except Exception as exc:
-        print(f"Hindsight processing webhook error: {exc}")
+        print(f"Hindsight ingest completion hook error: {exc}")
         return
 
     print(message if message else "[SILENT]")

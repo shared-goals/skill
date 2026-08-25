@@ -1323,7 +1323,7 @@ def main() -> int:
 		areas = load_areas(args.areas, logger)
 		runtime = build_runtime(areas, skill_index, logger)
 		validate_runtime_or_raise(runtime)
-		
+
 		script_chunks: list[str] = ["\n"]
 		for area in runtime["areas"]:
 			script_chunks.append(f"Area JSON [{area.get('key', 'unknown')}]:\n")

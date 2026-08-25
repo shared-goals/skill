@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import json
 import os
@@ -15,6 +16,7 @@ from unittest import mock
 
 MODULE_PATH = Path(__file__).parent / "daily-compass.py"
 SHARED_GOALS_MODULE_PATH = Path(__file__).parent / "daily-shared-goals-status.py"
+COMPASS_UPDATE_MODULE_PATH = Path(__file__).parent / "compass-update.py"
 SCRIPTS_DIR = Path(__file__).parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
@@ -32,6 +34,12 @@ assert sg_spec and sg_spec.loader
 sg_module = importlib.util.module_from_spec(sg_spec)
 sys.modules[sg_spec.name] = sg_module
 sg_spec.loader.exec_module(sg_module)  # type: ignore[attr-defined]
+
+compass_update_spec = importlib.util.spec_from_file_location("compass_update_module", COMPASS_UPDATE_MODULE_PATH)
+assert compass_update_spec and compass_update_spec.loader
+compass_update_module = importlib.util.module_from_spec(compass_update_spec)
+sys.modules[compass_update_spec.name] = compass_update_module
+compass_update_spec.loader.exec_module(compass_update_module)  # type: ignore[attr-defined]
 
 
 class DailyCompassPureTests(unittest.TestCase):
@@ -398,6 +406,49 @@ class DailyCompassPureTests(unittest.TestCase):
         self.assertIn("### Feeling (never)", text)
         self.assertIn("### Mind (never)", text)
         self.assertIn("No goals in this dimension.", text)
+
+    def test_update_compass_markdown_uses_explicit_logos_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "Compass.md"
+            sg_module.update_compass_markdown(
+                {"dimensions": []},
+                path,
+                logos_text="- [ ] Follow the generated Logos prompt",
+            )
+
+            text = path.read_text(encoding="utf-8")
+
+        self.assertIn("## Logos", text)
+        self.assertIn("- [ ] Follow the generated Logos prompt", text)
+        self.assertIn("## Shared Goals", text)
+
+    def test_compass_update_reads_logos_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            context_path = Path(tmp_dir) / "daily-compass-context.json"
+            context_path.write_text(
+                json.dumps(
+                    {
+                        "areas": [
+                            {
+                                "key": "shared-goals",
+                                "lines": [
+                                    {
+                                        "title": "Finance #sg-finance hunger:17d",
+                                        "body": "Fallback body",
+                                        "signal": "Use the generated Finance Logos",
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(logos_context=str(context_path))
+
+            text = compass_update_module._read_logos_text(args)
+
+        self.assertEqual(text, "- [ ] Use the generated Finance Logos")
 
     def test_preview_commit_fields_allows_editing_done_and_next_step(self) -> None:
         with mock.patch("builtins.input", side_effect=["y", "Updated done", "y", "Updated next step"]):

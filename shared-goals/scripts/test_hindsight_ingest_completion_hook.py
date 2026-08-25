@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for deterministic hindsight-processing-webhook finisher flow."""
+"""Tests for deterministic Hindsight ingest completion hook flow."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 
 
-HOOK_PATH = Path.home() / ".hermes" / "skills" / "shared-goals" / "hindsight-processing-webhook" / "scripts" / "hindsight-processing-webhook.py"
+HOOK_PATH = Path.home() / ".hermes" / "skills" / "shared-goals" / "hindsight-ingest-completion-hook" / "scripts" / "hindsight-ingest-completion-hook.py"
 
 
 def _load_module(module_name: str, path: Path):
@@ -23,10 +23,10 @@ def _load_module(module_name: str, path: Path):
     return module
 
 
-mod = _load_module("hindsight_processing_webhook_det", HOOK_PATH)
+mod = _load_module("hindsight_ingest_completion_hook_det", HOOK_PATH)
 
 
-class HindsightProcessingWebhookTests(unittest.TestCase):
+class HindsightIngestCompletionHookTests(unittest.TestCase):
     def test_silent_for_unwatched_event(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             state_path = Path(tmp) / "state.json"

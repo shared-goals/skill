@@ -6,7 +6,5 @@
 .pytest_cache/
 .ruff_cache/
 areas/
-wtd-video-analyze/
-lesson-maker/
 shared-goals/state/
 shared-goals/runtime/

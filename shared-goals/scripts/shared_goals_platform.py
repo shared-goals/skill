@@ -318,8 +318,8 @@ def _read_next_steps(path: Path) -> str:
     return "\n".join(out).strip()
 
 
-def update_compass_markdown(payload: dict[str, Any], path: Path) -> None:
-    next_steps = _read_next_steps(path)
+def update_compass_markdown(payload: dict[str, Any], path: Path, *, logos_text: str | None = None) -> None:
+    next_steps = str(logos_text or "").strip() or _read_next_steps(path)
     if not next_steps:
         next_steps = "- [ ] No next steps yet."
     markdown = "\n".join(["## Logos", "", next_steps, "", render_shared_goals_section(payload).strip()]) + "\n"

@@ -9,14 +9,15 @@ metadata:
   hermes:
     tags: [wiki, knowledge-base, wtd, shared-goals, research]
     category: shared-goals
-    related_skills: [llm-wiki, obsidian, wtd-video-analyze]
+    related_skills: [llm-wiki, obsidian, wtd-content-analyze]
 ---
 
 # WTD Wiki
 
 Maintain the knowledge wiki at `~/wiki`, built over Сергей Поляков's living
 text corpus «Что мне делать? :-)» (WTD). The corpus source of truth is the git
-repo `/Users/shag/Work/whattodo` (public: https://text.sharedgoals.ru).
+repo configured by `WTD_REPO_PATH` or the typical local path `~/Work/whattodo`
+(public: https://text.sharedgoals.ru).
 The wiki is a map across the corpus: concept/entity/comparison pages with
 wikilinks, exact quotations, and provenance markers — not a copy of the text.
 
@@ -34,7 +35,7 @@ wikilinks, exact quotations, and provenance markers — not a copy of the text.
 ├── SCHEMA.md        # domain, tag taxonomy, conventions (read first)
 ├── index.md         # catalog of every page, sectioned by type
 ├── log.md           # append-only action log (ingest/update/lint entries)
-├── raw/text/        # SYMLINKS to /Users/shag/Work/whattodo/text/*.md
+├── raw/text/        # SYMLINKS to the local WTD checkout text/*.md
 ├── entities/        # people/orgs (authors, thinkers cited in corpus)
 ├── concepts/        # one page per concept (happiness, calling, faith, ...)
 ├── comparisons/     # side-by-side analyses
@@ -52,8 +53,8 @@ sources; single-source pages carry `sources:` frontmatter only.
 - **`raw/text/` is symlinks to the source repo, NOT copies.** DRY: the corpus
   is a living git repo (~2.9 MB); copies would drift and bloat.
 - **Never write sha256/frontmatter into raw files** — they are symlinked, an
-  append would modify the source repo. Drift detection = git history of
-  `/Users/shag/Work/whattodo`; record the commit hash in log.md on each ingest.
+  append would modify the source repo. Drift detection = git history of the
+  local WTD checkout; record the commit hash in log.md on each ingest.
 - This deviation is documented in `~/wiki/SCHEMA.md`; keep it in sync if the
   layout changes.
 
@@ -103,5 +104,5 @@ source repo. Clean exit = healthy wiki.
 - `llm-wiki` (generic Karpathy-wiki pattern; this skill documents the
   deviations applied for a living single-corpus source)
 - `obsidian` (open `~/wiki` as a vault; graph view shows the link network)
-- `wtd-video-analyze` (compare a video/sermon against the WTD corpus —
+- `wtd-content-analyze` (compare outside text or video against the WTD corpus —
   complement to this wiki)

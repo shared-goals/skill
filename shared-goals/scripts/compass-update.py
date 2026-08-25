@@ -19,6 +19,7 @@ from shared_goals_platform import (
     parse_completed_goals_from_compass_text,
     update_compass_markdown,
 )
+from daily_compass_shared import load_json_snapshot, render_next_steps_from_compass_snapshot
 
 try:
     from rich.console import Console
@@ -219,7 +220,24 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Do not prompt for commit creation from completed tasks",
     )
+    parser.add_argument(
+        "--logos-context",
+        default="",
+        help="Daily Compass context JSON to render into the Logos section",
+    )
     return parser.parse_args()
+
+
+def _read_logos_text(args: argparse.Namespace) -> str | None:
+    if args.logos_context:
+        snapshot = load_json_snapshot(Path(args.logos_context).expanduser())
+        if snapshot:
+            rendered = render_next_steps_from_compass_snapshot(snapshot).strip()
+            if rendered.startswith("## Logos"):
+                return rendered.split("\n", 2)[2].strip() if "\n" in rendered else ""
+            return rendered
+
+    return None
 
 
 def main() -> int:
@@ -239,7 +257,7 @@ def main() -> int:
             print(f"Created commits: {created}")
 
     payload = fetch_platform_shared_goals()
-    update_compass_markdown(payload, path)
+    update_compass_markdown(payload, path, logos_text=_read_logos_text(args))
 
     if console:
         console.print(f"[green]Updated[/green] {path}")

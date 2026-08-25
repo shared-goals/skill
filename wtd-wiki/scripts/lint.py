@@ -19,7 +19,7 @@ import sys
 from collections import defaultdict
 
 DEFAULT_WIKI = os.path.expanduser("~/wiki")
-SOURCE_TEXT_DIR = "/Users/shag/Work/whattodo/text"
+SOURCE_TEXT_DIR = os.path.expanduser(os.environ.get("WTD_REPO_TEXT_DIR", "~/Work/whattodo/text"))
 PAGE_DIRS = ["entities", "concepts", "comparisons", "queries"]
 REQUIRED_FM = ["title", "created", "updated", "type", "tags", "sources"]
 

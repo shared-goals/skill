@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared state helpers for deterministic WTD/Hindsight webhook processing."""
+"""Shared state helpers for deterministic Hindsight ingest completion."""
 from __future__ import annotations
 
 import json

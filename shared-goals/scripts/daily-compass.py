@@ -294,7 +294,6 @@ def print_render_separator() -> None:
 
 def runtime_json_snapshot(runtime: CompassContext) -> dict[str, Any]:
 	snapshot: dict[str, Any] = {
-		"generated_at": datetime.now().isoformat(timespec="seconds"),
 		"compass": {
 			"signal": str(runtime.get("signal", "")),
 			"dimensions": runtime.get("dimensions", []),
@@ -314,41 +313,6 @@ def runtime_json_snapshot(runtime: CompassContext) -> dict[str, Any]:
 		base["lines"] = line_items
 		snapshot["areas"].append(base)
 	return snapshot
-
-
-def load_cached_runtime_for_today(path: Path, logger: TraceLogger) -> CompassContext | None:
-	"""Reuse a same-day context snapshot instead of re-running boundary scripts + Hermes calls.
-
-	Delete the snapshot file to force a fresh run.
-	"""
-	if not path.exists():
-		return None
-	try:
-		payload = json.loads(path.read_text(encoding="utf-8"))
-	except (OSError, ValueError) as exc:
-		logger.log(f"Cached context read failed: {exc}")
-		return None
-	if not isinstance(payload, dict):
-		return None
-	generated_at = str(payload.get("generated_at", "")).strip()
-	if not generated_at:
-		return None
-	try:
-		generated_date = datetime.fromisoformat(generated_at).date()
-	except ValueError:
-		return None
-	if generated_date != datetime.now().date():
-		return None
-	compass = payload.get("compass", {}) if isinstance(payload.get("compass"), dict) else {}
-	areas = payload.get("areas", []) if isinstance(payload.get("areas"), list) else []
-	logger.log(f"Reusing cached context from {path} (generated {generated_at}); delete the file for a fresh run")
-	return {
-		"signal_prompt": DEFAULT_COMPASS_PROMPT,
-		"signal": str(compass.get("signal", "")),
-		"dimensions": compass.get("dimensions", []) or list(DEFAULT_DIMENSIONS),
-		"areas": [hydrate_boundary_area(area) for area in areas if isinstance(area, dict)],
-		"area_meta": {},
-	}
 
 
 def normalize_block(text: str) -> str:
@@ -892,15 +856,13 @@ def run_shared_goals_reflection(task: AreaSignalTask, logger: TraceLogger) -> Si
 		"Reflect on this Shared Goal and prepare one detailed English prompt for the next "
 		"Hermes agent action. Use relevant memories about prior decisions, preferences, "
 		"blockers, and current context, but keep the authoritative next steps as the task "
-		"boundary. Return only the prompt, without analysis, citations, headings, or summary. "
-		f"Keep the entire prompt under {task.signal_max_chars} characters so it is not cut off.\n\n"
+		"boundary. Return only the prompt, without analysis, citations, headings, or summary.\n\n"
 		f"Selected goal: {goal_title}\n"
 		f"Authoritative next steps:\n{goal_body}"
 	)
 	logger.log(f"Hindsight reflect start: {goal_title} (hunger={hunger_days(selected_line)}d)")
 	try:
 		response = run_hermes_hindsight_reflect(query, task, logger)
-		log_text_block(logger, "Raw hindsight_reflect response", response)
 		try:
 			payload = json.loads(response)
 		except json.JSONDecodeError:
@@ -908,21 +870,10 @@ def run_shared_goals_reflection(task: AreaSignalTask, logger: TraceLogger) -> Si
 		prompt = str(payload.get("result", payload.get("text", ""))).strip()
 		if not prompt or prompt.startswith("[ERROR") or prompt.startswith("{"):
 			raise RuntimeError(prompt or "empty reflection")
-		if len(prompt) > task.signal_max_chars:
-			logger.log(
-				f"Hindsight reflect exceeded {task.signal_max_chars} chars "
-				f"({len(prompt)}); truncating at last word boundary"
-			)
-			truncated = prompt[: task.signal_max_chars].rsplit(" ", 1)[0].rstrip()
-			prompt = truncated or prompt[: task.signal_max_chars].rstrip()
+		prompt = prompt[: task.signal_max_chars].rstrip()
 		updated_area = hydrate_boundary_area(task.area)
 		updated_lines = [dict(line) for line in candidates]
 		updated_lines[selected_index]["signal"] = prompt
-		# Compact: keep full title + body only for the selected goal; other
-		# goals stay visible by title but drop their next-steps body text.
-		for index, line in enumerate(updated_lines):
-			if index != selected_index:
-				line["body"] = ""
 		updated_area["lines"] = updated_lines
 		logger.log(f"Hindsight reflect done: {len(prompt)} chars")
 		return SignalJobResult(key=task.key, area=updated_area, reason="hindsight_reflected", ok=True)
@@ -1160,8 +1111,8 @@ def build_render_context(runtime: CompassContext) -> dict[str, Any]:
 						{
 							**line,
 							"display_signal": (
-								"\n**> "
-								+ " ".join(line.get("signal", "").split())
+								"**> "
+								+ line.get("signal", "").strip().replace("\n", "\n> ")
 								+ "||"
 								if area.get("key") == "shared-goals" and line.get("signal", "").strip()
 								else f"*{line.get('signal', '')}*" if line.get("signal", "").strip() else ""
@@ -1367,48 +1318,43 @@ def main() -> int:
 		logger.output(text)
 
 	try:
-		cached_runtime = load_cached_runtime_for_today(COMPASS_CONTEXT_STATE_FILE, logger)
-		if cached_runtime is not None:
-			runtime = cached_runtime
-			validate_runtime_or_raise(runtime)
+		log_phase(PHASE_BOUNDARY)
+		skill_index = build_skill_index(HERMES_SKILLS_DIR)
+		areas = load_areas(args.areas, logger)
+		runtime = build_runtime(areas, skill_index, logger)
+		validate_runtime_or_raise(runtime)
+		
+		script_chunks: list[str] = ["\n"]
+		for area in runtime["areas"]:
+			script_chunks.append(f"Area JSON [{area.get('key', 'unknown')}]:\n")
+			script_chunks.append(json.dumps(area, ensure_ascii=False, indent=2) + "\n\n")
+		log_block("".join(script_chunks))
+
+		if args.fast:
+			log_phase(PHASE_PROMPTS)
+			if args.verbose:
+				print_prompt_preview(runtime)
+			else:
+				logger.write_chunk("Generated signal prompts\n\n")
+				emit_generated_prompts(runtime, log_line)
+			logger.log("fast mode: signal requests skipped")
 		else:
-			log_phase(PHASE_BOUNDARY)
-			skill_index = build_skill_index(HERMES_SKILLS_DIR)
-			areas = load_areas(args.areas, logger)
-			runtime = build_runtime(areas, skill_index, logger)
+			log_phase(PHASE_PROMPTS)
+			if args.verbose:
+				print_prompt_preview(runtime)
+			else:
+				logger.write_chunk("Generated signal prompts\n\n")
+				emit_generated_prompts(runtime, log_line)
+
+		log_phase(PHASE_SIGNAL)
+		if args.fast:
+			log_block("Skipped in fast mode: Phase 3 runs hermes requests and JSON processing only in compass-run.\n")
+		else:
+			logger.log("phase 3 signal requests start")
+			enrich_runtime(runtime, logger, session)
 			validate_runtime_or_raise(runtime)
 
-			script_chunks: list[str] = ["\n"]
-			for area in runtime["areas"]:
-				script_chunks.append(f"Area JSON [{area.get('key', 'unknown')}]:\n")
-				script_chunks.append(json.dumps(area, ensure_ascii=False, indent=2) + "\n\n")
-			log_block("".join(script_chunks))
-
-			if args.fast:
-				log_phase(PHASE_PROMPTS)
-				if args.verbose:
-					print_prompt_preview(runtime)
-				else:
-					logger.write_chunk("Generated signal prompts\n\n")
-					emit_generated_prompts(runtime, log_line)
-				logger.log("fast mode: signal requests skipped")
-			else:
-				log_phase(PHASE_PROMPTS)
-				if args.verbose:
-					print_prompt_preview(runtime)
-				else:
-					logger.write_chunk("Generated signal prompts\n\n")
-					emit_generated_prompts(runtime, log_line)
-
-			log_phase(PHASE_SIGNAL)
-			if args.fast:
-				log_block("Skipped in fast mode: Phase 3 runs hermes requests and JSON processing only in compass-run.\n")
-			else:
-				logger.log("phase 3 signal requests start")
-				enrich_runtime(runtime, logger, session)
-				validate_runtime_or_raise(runtime)
-
-			save_json_snapshot(COMPASS_CONTEXT_STATE_FILE, runtime_json_snapshot(runtime), logger)
+		save_json_snapshot(COMPASS_CONTEXT_STATE_FILE, runtime_json_snapshot(runtime), logger)
 
 		log_phase(PHASE_RENDER)
 		context = build_render_context(runtime)

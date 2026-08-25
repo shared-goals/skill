@@ -98,10 +98,6 @@ class DailyCompassPureTests(unittest.TestCase):
         self.assertEqual(calls[0][0], "hindsight_reflect")
         self.assertIn("Hungry #sg-photo hunger:14d", calls[0][1]["query"])
         self.assertEqual(result.area["lines"][1]["signal"], prompt)
-        self.assertEqual(result.area["lines"][1]["body"], "Do photos")
-        # Non-selected goals stay visible by title but drop their body text.
-        self.assertEqual(result.area["lines"][0]["body"], "")
-        self.assertEqual(result.area["lines"][0]["signal"], "")
 
     def test_json_area_signal_contract_uses_area_limit(self) -> None:
         contract = module.json_area_signal_contract({"signal_max_chars": 2000})
@@ -679,10 +675,10 @@ Ignore.
         line = context["dimensions"][0]["areas"][0]["lines"][0]
         self.assertEqual(
             line["display_signal"],
-            "\n**> Goal: Finish the music workflow. Close the task.||",
+            "**> Goal: Finish the music workflow.\n> Close the task.||",
         )
         rendered = module.render_template(context)
-        self.assertIn("**> Goal: Finish the music workflow. Close the task.||", rendered)
+        self.assertIn("**> Goal: Finish the music workflow.\n> Close the task.||", rendered)
 
     def test_validate_json_response_strict_rejects_extra_line_key(self) -> None:
         text = (

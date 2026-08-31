@@ -11,6 +11,7 @@ import argparse
 import os
 from pathlib import Path
 
+from daily_compass_shared import load_json_snapshot, render_next_steps_from_compass_snapshot
 from shared_goals_platform import (
     commit_source_ref,
     create_commit,
@@ -19,7 +20,6 @@ from shared_goals_platform import (
     parse_completed_goals_from_compass_text,
     update_compass_markdown,
 )
-from daily_compass_shared import load_json_snapshot, render_next_steps_from_compass_snapshot
 
 try:
     from rich.console import Console

@@ -13,7 +13,7 @@ import importlib.util
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any, Callable, TypedDict
 
 
 VALID_DIMENSIONS = {"faith", "will", "feeling", "mind"}
@@ -408,6 +408,91 @@ def run_subprocess_text(
 		timed_out=False,
 		launch_error=False,
 	)
+
+
+def extract_session_id(*texts: str) -> str | None:
+	"""Find a Hermes session id in CLI stdout/stderr text."""
+	patterns = [
+		r"session[_\s-]*id\s*[:=]\s*`?([A-Za-z0-9_.:-]+)`?",
+		r"\b([0-9]{8}_[0-9]{6}_[a-f0-9]{6,})\b",
+	]
+	for text in texts:
+		blob = str(text or "")
+		if not blob:
+			continue
+		for pattern in patterns:
+			match = re.search(pattern, blob, flags=re.IGNORECASE)
+			if not match:
+				continue
+			value = str(match.group(1)).strip()
+			if value:
+				return value
+	return None
+
+
+def load_persistent_session_id(path: Path, logger: TraceLogger | None = None) -> str | None:
+	"""Read the persisted Hermes session id shared by all Daily Compass hermes calls."""
+	if not path.exists():
+		return None
+	try:
+		payload = json.loads(path.read_text(encoding="utf-8"))
+	except (OSError, ValueError) as exc:
+		if logger is not None:
+			logger.log(f"Session state read failed: {exc}")
+		return None
+	if not isinstance(payload, dict):
+		return None
+	value = str(payload.get("session_id", "")).strip()
+	return value or None
+
+
+def save_persistent_session_id(
+	path: Path, session_id: str, session_name: str, logger: TraceLogger | None = None
+) -> None:
+	"""Persist the shared Hermes session id so the next call (today or tomorrow) resumes it."""
+	if not session_id:
+		return
+	payload = {
+		"session_id": str(session_id),
+		"session_name": str(session_name),
+		"updated_at": datetime.now().isoformat(timespec="seconds"),
+	}
+	try:
+		path.parent.mkdir(parents=True, exist_ok=True)
+		path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+	except OSError as exc:
+		if logger is not None:
+			logger.log(f"Session state write failed: {exc}")
+
+
+def run_resumable_hermes_call(
+	build_cmd: Callable[[str | None], list[str]],
+	state_file: Path,
+	logger: TraceLogger,
+	label: str,
+	timeout: int = BOUNDARY_SCRIPT_TIMEOUT,
+	session_name: str = "Daily Compass",
+) -> SubprocessTextResult:
+	"""Run one hermes call resuming the session persisted in state_file.
+
+	This is the single reusable entry point for any script that should share the
+	Daily Compass session: it resumes the id persisted in state_file, retries once
+	without --resume if the resume itself fails, then persists whatever session id
+	results so the next caller (any area, any day) picks it back up.
+	"""
+	session_id = load_persistent_session_id(state_file, logger)
+	result = run_subprocess_text(build_cmd(session_id), timeout=timeout, env=os.environ.copy())
+	if session_id and not result.timed_out and not result.launch_error and result.returncode != 0:
+		logger.log(f"Hermes resume failed for {label}; retrying without resume")
+		result = run_subprocess_text(build_cmd(None), timeout=timeout, env=os.environ.copy())
+	if not result.timed_out and not result.launch_error and result.returncode == 0:
+		new_id = extract_session_id(result.stderr, result.stdout)
+		if new_id:
+			if new_id != session_id:
+				logger.log(f"Hermes session id: {new_id}")
+			save_persistent_session_id(state_file, new_id, session_name, logger)
+	return result
+
 
 @dataclass
 class BoundaryExecResult:

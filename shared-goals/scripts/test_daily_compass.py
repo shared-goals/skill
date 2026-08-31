@@ -798,15 +798,15 @@ Ignore.
 
     def test_extract_session_id_accepts_multiple_formats(self) -> None:
         self.assertEqual(
-            module.extract_session_id("session_id: 20260713_080052_9ee155"),
+            shared.extract_session_id("session_id: 20260713_080052_9ee155"),
             "20260713_080052_9ee155",
         )
         self.assertEqual(
-            module.extract_session_id("**Session ID:** `20260713_080052_9ee155`"),
+            shared.extract_session_id("**Session ID:** `20260713_080052_9ee155`"),
             "20260713_080052_9ee155",
         )
         self.assertEqual(
-            module.extract_session_id("no match", "session id = 20260713_080052_9ee155"),
+            shared.extract_session_id("no match", "session id = 20260713_080052_9ee155"),
             "20260713_080052_9ee155",
         )
 
@@ -816,7 +816,7 @@ Ignore.
             logger = module.TraceLogger(verbose=False)
             try:
                 self.assertIsNone(module.load_persistent_session_id(state_path, logger))
-                module.save_persistent_session_id(
+                shared.save_persistent_session_id(
                     state_path,
                     "20260713_080052_9ee155",
                     "Daily Compass",
@@ -829,6 +829,132 @@ Ignore.
             finally:
                 if hasattr(logger, "_fh") and not logger._fh.closed:
                     logger._fh.close()
+
+    def test_run_resumable_hermes_call_resumes_persisted_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state_path = Path(tmp_dir) / "state" / "daily-compass-session.json"
+            shared.save_persistent_session_id(state_path, "20260101_000000_abcdef", "Daily Compass")
+            calls: list[list[str]] = []
+
+            def fake_run(argv, *, timeout, env=None):
+                calls.append(argv)
+                return shared.SubprocessTextResult(returncode=0, stdout="ok", stderr="")
+
+            def build_cmd(resume_id):
+                cmd = ["hermes"]
+                if resume_id:
+                    cmd.extend(["--resume", resume_id])
+                cmd.extend(["-z", "hi"])
+                return cmd
+
+            logger = module.TraceLogger(verbose=False)
+            try:
+                with mock.patch.object(shared, "run_subprocess_text", side_effect=fake_run):
+                    result = shared.run_resumable_hermes_call(build_cmd, state_path, logger, "test")
+            finally:
+                if hasattr(logger, "_fh") and not logger._fh.closed:
+                    logger._fh.close()
+
+            self.assertEqual(len(calls), 1)
+            self.assertIn("--resume", calls[0])
+            self.assertIn("20260101_000000_abcdef", calls[0])
+            self.assertEqual(result.returncode, 0)
+
+    def test_run_resumable_hermes_call_falls_back_and_persists_new_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state_path = Path(tmp_dir) / "state" / "daily-compass-session.json"
+            shared.save_persistent_session_id(state_path, "stale-session", "Daily Compass")
+            calls: list[list[str]] = []
+
+            def fake_run(argv, *, timeout, env=None):
+                calls.append(argv)
+                if "--resume" in argv:
+                    return shared.SubprocessTextResult(returncode=1, stdout="", stderr="unknown session")
+                return shared.SubprocessTextResult(returncode=0, stdout="session_id: 20260820_190110_1f2393", stderr="")
+
+            def build_cmd(resume_id):
+                cmd = ["hermes"]
+                if resume_id:
+                    cmd.extend(["--resume", resume_id])
+                cmd.extend(["-z", "hi"])
+                return cmd
+
+            logger = module.TraceLogger(verbose=False)
+            try:
+                with mock.patch.object(shared, "run_subprocess_text", side_effect=fake_run):
+                    result = shared.run_resumable_hermes_call(build_cmd, state_path, logger, "test")
+            finally:
+                if hasattr(logger, "_fh") and not logger._fh.closed:
+                    logger._fh.close()
+
+            self.assertEqual(len(calls), 2)
+            self.assertIn("--resume", calls[0])
+            self.assertNotIn("--resume", calls[1])
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(
+                shared.load_persistent_session_id(state_path, logger),
+                "20260820_190110_1f2393",
+            )
+
+    def test_hindsight_reflect_resumes_global_daily_compass_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state_path = Path(tmp_dir) / "state" / "daily-compass-session.json"
+            shared.save_persistent_session_id(state_path, "20260820_190110_1f2393", "Daily Compass")
+            calls: list[list[str]] = []
+
+            def fake_run(argv, *, timeout, env=None):
+                calls.append(argv)
+                return shared.SubprocessTextResult(returncode=0, stdout="prompt text", stderr="")
+
+            task = module.AreaSignalTask(
+                index=0, key="shared-goals", label="area:shared-goals", area={}, area_prompt="", prompt=""
+            )
+            logger = module.TraceLogger(verbose=False)
+            try:
+                with mock.patch.object(module, "ACTIVE_SESSION_STATE_FILE", state_path), mock.patch.object(
+                    module, "resolve_hermes_argv", return_value=["hermes"]
+                ), mock.patch.object(shared, "run_subprocess_text", side_effect=fake_run):
+                    result = module.run_hermes_hindsight_reflect("query text", task, logger)
+            finally:
+                if hasattr(logger, "_fh") and not logger._fh.closed:
+                    logger._fh.close()
+
+            self.assertEqual(result, "prompt text")
+            self.assertEqual(len(calls), 1)
+            self.assertIn("--resume", calls[0])
+            self.assertIn("20260820_190110_1f2393", calls[0])
+            self.assertIn("memory", calls[0])
+
+    def test_run_hermes_raw_chat_mode_resumes_session_via_shared_helper(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state_path = Path(tmp_dir) / "state" / "daily-compass-session.json"
+            shared.save_persistent_session_id(state_path, "20260820_190110_1f2393", "Daily Compass")
+            calls: list[list[str]] = []
+
+            def fake_run(argv, *, timeout, env=None):
+                calls.append(argv)
+                return shared.SubprocessTextResult(returncode=0, stdout='{"area": {}}', stderr="")
+
+            session = module.HermesSessionState(
+                mode="chat",
+                hermes_argv=["hermes"],
+                chat_argv=[],
+                session_name="Daily Compass",
+                session_state_file=state_path,
+            )
+            logger = module.TraceLogger(verbose=False)
+            try:
+                with mock.patch.object(shared, "run_subprocess_text", side_effect=fake_run):
+                    text, _elapsed = module.run_hermes_raw("prompt", "", "", logger, "area:news", session)
+            finally:
+                if hasattr(logger, "_fh") and not logger._fh.closed:
+                    logger._fh.close()
+
+            self.assertEqual(text, '{"area": {}}')
+            self.assertEqual(len(calls), 1)
+            self.assertIn("--resume", calls[0])
+            self.assertIn("20260820_190110_1f2393", calls[0])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

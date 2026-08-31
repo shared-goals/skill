@@ -34,8 +34,10 @@ from daily_compass_shared import (
 	area_context_definition_text,
 	build_numbered_lines,
 	build_skill_index,
+	load_persistent_session_id,
 	resolve_hermes_argv,
 	resolve_non_tui_cli_argv,
+	run_resumable_hermes_call,
 	sanitize_hermes_output,
 	extract_section,
 	normalize_text,
@@ -65,6 +67,12 @@ TEMPLATE_FILE = SHARED_GOALS_DIR / "templates" / "daily-output.md"
 LOGS_DIR = SHARED_GOALS_DIR / "logs"
 JOBS_FILE = HOME / ".hermes" / "cron" / "jobs.json"
 SESSION_STATE_FILE = SHARED_GOALS_DIR / "state" / "daily-compass-session.json"
+
+# Global handles to the one Daily Compass session (see SESSION_STATE_FILE docstring below):
+# every hermes call in a run — area jobs, shared-goals reflection, compass synthesis —
+# resumes and persists through this same file, set once in main() from CLI args.
+ACTIVE_SESSION_STATE_FILE = SESSION_STATE_FILE
+ACTIVE_SESSION_NAME = "Daily Compass"
 
 DEFAULT_DIMENSIONS = ["faith", "will", "feeling", "mind"]
 VALID_DIMENSIONS = set(DEFAULT_DIMENSIONS)
@@ -565,54 +573,6 @@ def resolve_chat_argv() -> list[str]:
 	return resolve_non_tui_cli_argv()
 
 
-def extract_session_id(*texts: str) -> str | None:
-	patterns = [
-		r"session[_\s-]*id\s*[:=]\s*`?([A-Za-z0-9_.:-]+)`?",
-		r"\b([0-9]{8}_[0-9]{6}_[a-f0-9]{6,})\b",
-	]
-	for text in texts:
-		blob = str(text or "")
-		if not blob:
-			continue
-		for pattern in patterns:
-			match = re.search(pattern, blob, flags=re.IGNORECASE)
-			if not match:
-				continue
-			value = str(match.group(1)).strip()
-			if value:
-				return value
-	return None
-
-
-def load_persistent_session_id(path: Path, logger: TraceLogger) -> str | None:
-	if not path.exists():
-		return None
-	try:
-		payload = json.loads(path.read_text(encoding="utf-8"))
-	except (OSError, ValueError) as exc:
-		logger.log(f"Session state read failed: {exc}")
-		return None
-	if not isinstance(payload, dict):
-		return None
-	value = str(payload.get("session_id", "")).strip()
-	return value or None
-
-
-def save_persistent_session_id(path: Path, session_id: str, session_name: str, logger: TraceLogger) -> None:
-	if not session_id:
-		return
-	payload = {
-		"session_id": str(session_id),
-		"session_name": str(session_name),
-		"updated_at": datetime.now().isoformat(timespec="seconds"),
-	}
-	try:
-		path.parent.mkdir(parents=True, exist_ok=True)
-		path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-	except OSError as exc:
-		logger.log(f"Session state write failed: {exc}")
-
-
 def maybe_rename_session(session: HermesSessionState, logger: TraceLogger) -> None:
 	if session.mode != "chat":
 		return
@@ -696,63 +656,60 @@ def run_hermes_raw(
 	label: str,
 	session: HermesSessionState,
 ) -> tuple[str, float]:
-	cmd, mode = build_hermes_cmd(prompt, model, provider, session)
-	if not cmd:
+	if not session.hermes_argv:
 		logger.log("Hermes command unavailable: neither PATH shim nor module fallback found")
 		return "[ERR:hermes_unavailable]", 0.0
 	started = datetime.now()
-	logger.log(f"Hermes call start: {label} ({mode})")
 
-	def run_cmd(argv: list[str], run_mode: str) -> tuple[int, str, str] | None:
-		result = run_subprocess_text(argv, timeout=180, env=os.environ.copy())
+	if session.mode != "chat":
+		cmd, mode = build_hermes_cmd(prompt, model, provider, session)
+		if not cmd:
+			return "[ERR:hermes_unavailable]", 0.0
+		logger.log(f"Hermes call start: {label} ({mode})")
+		result = run_subprocess_text(cmd, timeout=180, env=os.environ.copy())
 		if result.timed_out:
-			logger.log(f"Hermes call timed out for {label} ({run_mode})")
-			return (-1, "", "")
+			logger.log(f"Hermes call timed out for {label} ({mode})")
+			return "[ERR:hermes_timeout]", 0.0
 		if result.launch_error:
 			logger.log(f"Hermes call failed for {label}: {result.stderr}")
-			return None
-		return (result.returncode, result.stdout, result.stderr)
-
-	result = run_cmd(cmd, mode)
-	if result is None:
-		return "[ERR:hermes_unavailable]", 0.0
-	if result[0] == -1:
-		return "[ERR:hermes_timeout]", 0.0
-
-	returncode, stdout_text, stderr_text = result
-
-	if returncode != 0 and mode == "chat_resume":
-		err = (stderr_text or "").strip()[:300]
-		logger.log(f"Hermes resume failed for {label} ({returncode}): {err}")
-		logger.log(f"Hermes fallback start: {label} (chat_new)")
-		session.session_id = None
-		session.rename_needed = True
-		fallback_cmd, fallback_mode = build_hermes_cmd(prompt, model, provider, session)
-		result = run_cmd(fallback_cmd, fallback_mode)
-		if result is None:
 			return "[ERR:hermes_unavailable]", 0.0
-		if result[0] == -1:
+		if result.returncode != 0:
+			err = (result.stderr or "").strip()[:300]
+			logger.log(f"Hermes non-zero exit for {label} ({result.returncode}): {err}")
+			return f"[ERR:hermes_exit_{result.returncode}]", 0.0
+		stdout_text = result.stdout
+	else:
+		original_session_id = session.session_id
+		logger.log(f"Hermes call start: {label} (chat)")
+
+		def build(resume_id: str | None) -> list[str]:
+			session.session_id = resume_id
+			cmd, _mode = build_hermes_cmd(prompt, model, provider, session)
+			return cmd
+
+		result = run_resumable_hermes_call(
+			build, session.session_state_file, logger, label, timeout=180, session_name=session.session_name
+		)
+		if result.timed_out:
+			logger.log(f"Hermes call timed out for {label}")
 			return "[ERR:hermes_timeout]", 0.0
-		returncode, stdout_text, stderr_text = result
-		mode = fallback_mode
+		if result.launch_error:
+			logger.log(f"Hermes call failed for {label}: {result.stderr}")
+			return "[ERR:hermes_unavailable]", 0.0
+		if result.returncode != 0:
+			err = (result.stderr or "").strip()[:300]
+			logger.log(f"Hermes non-zero exit for {label} ({result.returncode}): {err}")
+			return f"[ERR:hermes_exit_{result.returncode}]", 0.0
 
-	if session.mode == "chat" and returncode == 0:
-		session_id = extract_session_id(stderr_text, stdout_text)
-		if session_id:
-			if session.session_id != session_id:
-				logger.log(f"Hermes session id: {session_id}")
-			session.session_id = session_id
-			save_persistent_session_id(session.session_state_file, session_id, session.session_name, logger)
-			maybe_rename_session(session, logger)
-
-	if returncode != 0:
-		err = (stderr_text or "").strip()[:300]
-		logger.log(f"Hermes non-zero exit for {label} ({returncode}): {err}")
-		return f"[ERR:hermes_exit_{returncode}]", 0.0
+		session.session_id = load_persistent_session_id(session.session_state_file, logger)
+		if original_session_id and session.session_id != original_session_id:
+			session.rename_needed = True
+		maybe_rename_session(session, logger)
+		stdout_text = result.stdout
 
 	text = sanitize_hermes_output(stdout_text or "")
 	elapsed = (datetime.now() - started).total_seconds()
-	logger.log(f"Hermes call done: {label} ({mode}, {elapsed:.1f}s)")
+	logger.log(f"Hermes call done: {label} ({session.mode}, {elapsed:.1f}s)")
 	return text or "[ERR:hermes_empty]", elapsed
 
 
@@ -883,7 +840,7 @@ def run_shared_goals_reflection(task: AreaSignalTask, logger: TraceLogger) -> Si
 
 
 def run_hermes_hindsight_reflect(query: str, task: AreaSignalTask, logger: TraceLogger) -> str:
-	"""Ask Hermes to invoke hindsight_reflect exactly once, then return its result."""
+	"""Ask Hermes to invoke hindsight_reflect exactly once, resuming the shared Daily Compass session."""
 	hermes_argv = resolve_hermes_argv()
 	if not hermes_argv:
 		raise RuntimeError("Hermes command unavailable")
@@ -893,9 +850,18 @@ def run_hermes_hindsight_reflect(query: str, task: AreaSignalTask, logger: Trace
 		"After the tool returns, output only its result text.\n\n"
 		f"{query}"
 	)
-	cmd = [*hermes_argv, "-t", "memory", "-z", request]
+
+	def build(resume_id: str | None) -> list[str]:
+		cmd = [*hermes_argv]
+		if resume_id:
+			cmd.extend(["--resume", resume_id])
+		cmd.extend(["-t", "memory", "-z", request])
+		return cmd
+
 	logger.log("Hermes direct hindsight_reflect request start (toolset=memory)")
-	result = run_subprocess_text(cmd, timeout=180, env=os.environ.copy())
+	result = run_resumable_hermes_call(
+		build, ACTIVE_SESSION_STATE_FILE, logger, "hindsight_reflect", timeout=180, session_name=ACTIVE_SESSION_NAME
+	)
 	if result.returncode != 0:
 		err = (result.stderr or result.stdout).strip()[:500]
 		logger.log(f"Hermes direct hindsight_reflect failed: {err}")
@@ -1286,6 +1252,9 @@ def main() -> int:
 		session_state_file=Path(str(args.session_state_file)).expanduser(),
 		rename_needed=args.session_mode == "chat",
 	)
+	global ACTIVE_SESSION_STATE_FILE, ACTIVE_SESSION_NAME
+	ACTIVE_SESSION_STATE_FILE = session.session_state_file
+	ACTIVE_SESSION_NAME = session.session_name
 	if session.mode == "chat":
 		logger.log("Hermes session mode: chat (single session for this run)")
 		restored_session_id = load_persistent_session_id(session.session_state_file, logger)

@@ -268,6 +268,7 @@ Boundary scripts may call `hermes -z` for LLM-powered recall (hindsight_reflect,
 - Use `BOUNDARY_SCRIPT_TIMEOUT - 20` for the inner `hermes -z` call to leave margin for other operations (billing, HTTP fetches, JSON output).
 - Parse the `hermes -z` stdout for JSON via `parse_json_object`.
 - On timeout or error, return a LineContext with the raw error message in `body` and empty `signal`.
+- **Never shell out to `hermes` directly with a bare `-z` call.** All Daily Compass hermes calls share one persisted session (`shared-goals/state/daily-compass-session.json`), so conversation context carries over within a run and across days. Use `run_resumable_hermes_call(build_cmd, state_file, logger, label)` from `daily_compass_shared` — it resumes the persisted session id, retries once without `--resume` if the resume fails, and persists whatever session id results. `build_cmd(resume_id)` only needs to add `--resume resume_id` when `resume_id` is truthy.
 
 ## Guardrails
 

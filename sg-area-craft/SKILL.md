@@ -193,7 +193,7 @@ Use this when guidance needs reset:
 
 ## Boundary script template (safe default)
 
-Import `BOUNDARY_SCRIPT_TIMEOUT` from `daily_compass_shared` for any timeout values. Never hardcode seconds.
+Import the semantic timeout constant for the request type from `daily_compass_shared`. Never hardcode seconds.
 
 ```python
 payload = {
@@ -260,15 +260,17 @@ When done, output exactly these sections:
 
 When a boundary script cannot fetch data (IMAP timeout, missing credentials, API error), put the **raw error message** in LineContext `body`. Do not wrap it in "Error is Ok: ..." or similar softening — the LLM signal step and the user need to see what actually failed.
 
-## Boundary scripts with hermes -z
+## Hermes calls from Daily Compass
 
-Boundary scripts may call `hermes -z` for LLM-powered recall (hindsight_reflect, session_search, SOUL.md reading). When doing so:
+Use the centralized `run_hermes_call` executor and a stable `HermesCallProfile` for LLM-powered work. The profile owns model, provider, toolsets, timeout, and named-session identity.
 
-- Use `BOUNDARY_SCRIPT_TIMEOUT` from `daily_compass_shared` as the outer subprocess timeout.
-- Use `BOUNDARY_SCRIPT_TIMEOUT - 20` for the inner `hermes -z` call to leave margin for other operations (billing, HTTP fetches, JSON output).
-- Parse the `hermes -z` stdout for JSON via `parse_json_object`.
+- Use `BOUNDARY_SCRIPT_TIMEOUT_SECONDS` for boundary processes.
+- Use `HERMES_SIGNAL_TIMEOUT_SECONDS` for ordinary area and compass synthesis.
+- Use `HERMES_REFLECT_TIMEOUT_SECONDS` for Hindsight reflection; it must exceed the configured Hindsight client timeout.
+- Parse Hermes stdout for JSON via `parse_json_object` when the call contract requires JSON.
 - On timeout or error, return a LineContext with the raw error message in `body` and empty `signal`.
-- **Never shell out to `hermes` directly with a bare `-z` call.** All Daily Compass hermes calls share one persisted session (`shared-goals/state/daily-compass-session.json`), so conversation context carries over within a run and across days. Use `run_resumable_hermes_call(build_cmd, state_file, logger, label)` from `daily_compass_shared` — it resumes the persisted session id, retries once without `--resume` if the resume fails, and persists whatever session id results. `build_cmd(resume_id)` only needs to add `--resume resume_id` when `resume_id` is truthy.
+- **Never build Hermes argv directly in an area.** `run_hermes_call` is the single owner of invocation, named-session persistence, retry classification, and lifecycle logging.
+- Keep toolsets stable for a named session. A model, provider, or toolset policy change rotates only that session.
 
 ## Guardrails
 
@@ -277,7 +279,7 @@ Boundary scripts may call `hermes -z` for LLM-powered recall (hindsight_reflect,
 3. Keep boundary scripts deterministic, compact, and data-focused.
 4. Keep guidance concrete and operational, not philosophical.
 5. Do not skip validation.
-6. Use `BOUNDARY_SCRIPT_TIMEOUT` from `daily_compass_shared` — never hardcode timeout values in area scripts, daily-compass, or area-test.
+6. Use semantic timeout constants from `daily_compass_shared` — never hardcode timeout values in area scripts, daily-compass, or area-test.
 6. Do not skip validation.
 
 ## Pitfall: `status: debug` in area YAML fails area-test
@@ -292,8 +294,8 @@ Boundary scripts run in the Hermes venv where external packages may not be insta
 
 When a boundary script calls `hermes -z` (e.g. for hindsight recall or SOUL reflection):
 
-- **Shared timeout constant.** `BOUNDARY_SCRIPT_TIMEOUT` in `daily_compass_shared.py` is the single source of truth. Both `area-test.py` and `daily-compass.py` pass it to `run_boundary_script()`. No hardcoded timeout values anywhere.
-- **Internal `hermes -z` timeout must be less.** Use `BOUNDARY_SCRIPT_TIMEOUT - 20` to leave margin for other fetches (billing APIs, etc.) and JSON serialization. If the script only calls `hermes -z` and nothing else, a smaller margin is fine.
+- **Semantic timeout constants.** `daily_compass_shared.py` is the single source of truth for boundary, signal, reflection, and session-command timeouts.
+- **Outer timeout ordering.** A wrapper timeout must exceed any inner client timeout so the wrapper can report the real operation failure instead of killing it first.
 - **Signals must be empty.** Boundary scripts must always emit `signal=""` on every LineContext. The LLM signal step (Area signal guidance) fills signals — never the script. If `hermes -z` returns a `signal` field, discard it.
 - **Graceful degradation is mandatory.** On timeout or error, return a valid LineContext with `body` set to the raw error message (not wrapped in "Error is Ok") and empty `signal`. The script must always exit 0 with valid JSON.
 - **Parse JSON from stdout.** `hermes -z` output may contain prose around the JSON. Use `parse_json_object()` from `daily_compass_shared` to extract the JSON payload.

@@ -10,8 +10,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
-HOOK_PATH = Path.home() / ".hermes" / "skills" / "shared-goals" / "hindsight-ingest-completion-hook" / "scripts" / "hindsight-ingest-completion-hook.py"
+HOOK_PATH = (
+    Path.home()
+    / ".hermes"
+    / "skills"
+    / "shared-goals"
+    / "hindsight-ingest-completion-hook"
+    / "scripts"
+    / "hindsight-ingest-completion-hook.py"
+)
 
 
 def _load_module(module_name: str, path: Path):
@@ -52,7 +59,13 @@ class HindsightIngestCompletionHookTests(unittest.TestCase):
             out = mod.run_for_event(
                 {"event": "retain.completed", "operation_id": "op-1"},
                 state_path=state_path,
-                counts_fn=lambda *_: {"retain_pending": 1, "retain_processing": 0, "consolidation_pending": 0, "consolidation_processing": 0, "total": 1},
+                counts_fn=lambda *_: {
+                    "retain_pending": 1,
+                    "retain_processing": 0,
+                    "consolidation_pending": 0,
+                    "consolidation_processing": 0,
+                    "total": 1,
+                },
             )
             state = json.loads(state_path.read_text(encoding="utf-8"))
         self.assertIsNone(out)
@@ -88,7 +101,13 @@ class HindsightIngestCompletionHookTests(unittest.TestCase):
             out = mod.run_for_event(
                 {"event": "consolidation.completed", "operation_id": "op-2"},
                 state_path=state_path,
-                counts_fn=lambda *_: {"retain_pending": 0, "retain_processing": 0, "consolidation_pending": 0, "consolidation_processing": 0, "total": 0},
+                counts_fn=lambda *_: {
+                    "retain_pending": 0,
+                    "retain_processing": 0,
+                    "consolidation_pending": 0,
+                    "consolidation_processing": 0,
+                    "total": 0,
+                },
             )
             state = json.loads(state_path.read_text(encoding="utf-8"))
 

@@ -7,13 +7,14 @@ Behavior:
 - while any non-delivery operation is pending/processing/running, exits silently
 - when the operation queue is truly quiet, switches state to completed and prints one completion message
 """
+
 from __future__ import annotations
 
 import json
 import os
 import sys
-import urllib.parse
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime
 from pathlib import Path

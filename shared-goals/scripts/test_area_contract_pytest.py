@@ -11,7 +11,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 SCRIPTS_DIR = Path(__file__).parent
 AREA_TEST = SCRIPTS_DIR / "area-test.py"
 

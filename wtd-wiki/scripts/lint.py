@@ -13,6 +13,7 @@ Exit code 0 = healthy; 1 = issues found. Prints findings grouped by severity.
 Usage:
     python3 lint.py [wiki_path]
 """
+
 import os
 import re
 import sys
@@ -103,10 +104,12 @@ def main() -> int:
         issues.append(f"MISSING raw/text SYMLINKS ({len(missing_raw)}): {missing_raw}")
 
     print(f"Wiki: {wiki}")
-    print(f"Pages: {len(pages)} "
-          f"(entities={len(os.listdir(os.path.join(wiki, 'entities')))}, "
-          f"concepts={len(os.listdir(os.path.join(wiki, 'concepts')))}, "
-          f"comparisons={len(os.listdir(os.path.join(wiki, 'comparisons')))})")
+    print(
+        f"Pages: {len(pages)} "
+        f"(entities={len(os.listdir(os.path.join(wiki, 'entities')))}, "
+        f"concepts={len(os.listdir(os.path.join(wiki, 'concepts')))}, "
+        f"comparisons={len(os.listdir(os.path.join(wiki, 'comparisons')))})"
+    )
     if issues:
         print("\n" + "\n\n".join(issues))
         return 1

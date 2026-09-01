@@ -62,11 +62,13 @@ def source_inventory(repo: Path) -> list[dict[str, object]]:
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
         headings = [line.strip() for line in text.splitlines() if line.lstrip().startswith("#")]
-        files.append({
-            "path": str(path.relative_to(repo)),
-            "bytes": path.stat().st_size,
-            "headings": headings[:100],
-        })
+        files.append(
+            {
+                "path": str(path.relative_to(repo)),
+                "bytes": path.stat().st_size,
+                "headings": headings[:100],
+            }
+        )
     return files
 
 
@@ -140,13 +142,17 @@ def main() -> int:
     state = git_state(wtd_repo)
     (output_dir / "git_state.json").write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     inventory = source_inventory(wtd_repo)
-    (output_dir / "wtd_source_inventory.json").write_text(json.dumps(inventory, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    (output_dir / "wtd_source_inventory.json").write_text(
+        json.dumps(inventory, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
 
     try:
         transcript = fetch_transcript(args.url, output_dir, args.language)
     except (FileNotFoundError, RuntimeError) as exc:
         transcript = {"ok": False, "error": str(exc)}
-        (output_dir / "transcript.json").write_text(json.dumps(transcript, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        (output_dir / "transcript.json").write_text(
+            json.dumps(transcript, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
         (output_dir / "transcript.md").write_text("", encoding="utf-8")
 
     metadata = {
@@ -157,7 +163,9 @@ def main() -> int:
         "git_pull_ok": state.get("pull", {}).get("ok", False),
         "transcript": transcript,
     }
-    (output_dir / "metadata.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    (output_dir / "metadata.json").write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
     print(json.dumps({"output_dir": str(output_dir), "metadata": metadata}, ensure_ascii=False, indent=2))
     return 0 if transcript.get("ok") else 1
 

@@ -199,6 +199,19 @@ def load_json_snapshot(path: Path) -> dict[str, Any] | None:
 	return payload if isinstance(payload, dict) else None
 
 
+def sanitize_logos_task_text(text: str) -> str:
+	"""Make free-form LLM signal text safe to embed as one Markdown checklist line.
+
+	Renders as a single `- [ ] ...` line, so any embedded newline (e.g. from a
+	truncated or multi-paragraph reflection) would otherwise split the list item
+	and any code-fence marker (```) placed at the start of a resulting line would
+	open a fenced code block that swallows the rest of Compass.md if it never
+	closes. Collapsing to one line neutralizes both failure modes at the source.
+	"""
+	collapsed = " ".join(str(text or "").split())
+	return collapsed.replace("```", "'''")
+
+
 def render_next_steps_from_compass_snapshot(snapshot: dict[str, Any]) -> str:
 	areas = snapshot.get("areas") if isinstance(snapshot, dict) else None
 	if not isinstance(areas, list):
@@ -240,7 +253,7 @@ def render_next_steps_from_compass_snapshot(snapshot: dict[str, Any]) -> str:
 			task = str(item.get("title", "")).strip()
 
 		if task:
-			lines.append(f"- [ ] {task}")
+			lines.append(f"- [ ] {sanitize_logos_task_text(task)}")
 			shown += 1
 	return "\n".join(lines).rstrip() + "\n"
 

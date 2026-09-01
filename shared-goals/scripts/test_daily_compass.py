@@ -461,6 +461,43 @@ class DailyCompassPureTests(unittest.TestCase):
         self.assertEqual(done, "Updated done")
         self.assertEqual(next_step, "Updated next step")
 
+    def test_render_next_steps_from_compass_snapshot_neutralizes_unclosed_code_fence(self) -> None:
+        text = shared.render_next_steps_from_compass_snapshot(
+            {
+                "areas": [
+                    {
+                        "key": "shared-goals",
+                        "lines": [
+                            {
+                                "title": "Health #sg-health",
+                                "url": "",
+                                "body": "Fallback body",
+                                "signal": "**Prompt**\n\n```\nTask: do the thing\n\nMore text with no closing fence",
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+
+        self.assertIn("## Logos", text)
+        # Rendered as a single line: no raw newline and no unbalanced ``` fence marker.
+        logos_line = text.splitlines()[2]
+        self.assertNotIn("```", logos_line)
+        self.assertEqual(text.count("```"), 0)
+
+    def test_truncate_signal_text_closes_dangling_code_fence(self) -> None:
+        text = "Intro text ```\nTask: unfinished sentence that keeps going and going"
+        result = module.truncate_signal_text(text, max_chars=20)
+
+        self.assertNotIn("```", result)
+        self.assertLessEqual(len(result), 20)
+
+    def test_truncate_signal_text_avoids_splitting_last_word(self) -> None:
+        result = module.truncate_signal_text("one two three four", max_chars=11)
+
+        self.assertEqual(result, "one two")
+
     def test_render_next_steps_from_compass_snapshot_uses_shared_goals_line_signals(self) -> None:
         text = shared.render_next_steps_from_compass_snapshot(
             {

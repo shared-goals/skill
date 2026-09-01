@@ -495,6 +495,22 @@ def area_prompt_requests_json(prompt: str) -> bool:
 	return bool(str(prompt or "").strip())
 
 
+def truncate_signal_text(text: str, max_chars: int) -> str:
+	"""Hard-cap free-form LLM signal text without cutting mid-word or leaving an open ``` fence."""
+	stripped = str(text or "").strip()
+	if len(stripped) <= max_chars:
+		return stripped
+	truncated = stripped[:max_chars]
+	# Avoid splitting the last word; fall back to the hard cut if there's no earlier boundary.
+	last_space = truncated.rfind(" ")
+	if last_space > 0:
+		truncated = truncated[:last_space]
+	# An odd number of ``` markers means the cut left a code fence open; drop the dangling fence.
+	if truncated.count("```") % 2 == 1:
+		truncated = truncated[: truncated.rfind("```")]
+	return truncated.rstrip()
+
+
 def json_area_signal_contract(area_payload: dict[str, Any]) -> str:
 	"""Standardized guardrails for JSON area signal round-trip."""
 	max_chars = int(area_payload.get("signal_max_chars", 50) or 50)
@@ -813,7 +829,10 @@ def run_shared_goals_reflection(task: AreaSignalTask, logger: TraceLogger) -> Si
 		"Reflect on this Shared Goal and prepare one detailed English prompt for the next "
 		"Hermes agent action. Use relevant memories about prior decisions, preferences, "
 		"blockers, and current context, but keep the authoritative next steps as the task "
-		"boundary. Return only the prompt, without analysis, citations, headings, or summary.\n\n"
+		"boundary. Return only the prompt, without analysis, citations, headings, or summary. "
+		"The result is embedded as a single Markdown checklist line: write plain prose only, "
+		"with no line breaks, bullet lists, or ``` code fences. "
+		f"Keep the entire result under {task.signal_max_chars} characters so it is never truncated.\n\n"
 		f"Selected goal: {goal_title}\n"
 		f"Authoritative next steps:\n{goal_body}"
 	)
@@ -827,7 +846,7 @@ def run_shared_goals_reflection(task: AreaSignalTask, logger: TraceLogger) -> Si
 		prompt = str(payload.get("result", payload.get("text", ""))).strip()
 		if not prompt or prompt.startswith("[ERROR") or prompt.startswith("{"):
 			raise RuntimeError(prompt or "empty reflection")
-		prompt = prompt[: task.signal_max_chars].rstrip()
+		prompt = truncate_signal_text(prompt, task.signal_max_chars)
 		updated_area = hydrate_boundary_area(task.area)
 		updated_lines = [dict(line) for line in candidates]
 		updated_lines[selected_index]["signal"] = prompt

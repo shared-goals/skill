@@ -46,8 +46,8 @@ from daily_compass_shared import (
     parse_json_object,
     parse_top_level_yaml,
     project_boundary_to_area_context,
+    resolve_chat_cli_argv,
     resolve_hermes_argv,
-    resolve_non_tui_cli_argv,
     run_boundary_script,
     run_hermes_call,
     run_subprocess_text,
@@ -136,8 +136,6 @@ class HermesSessionState:
     session_name: str = DEFAULT_SESSION_TITLE
     session_state_file: Path = SESSION_STATE_FILE
     call_profiles: dict[str, HermesCallProfile] = field(default_factory=dict)
-    rename_needed: bool = False
-    renamed_session_ids: set[str] = field(default_factory=set)
 
 
 def prune_expired_logs(logs_dir: Path) -> None:
@@ -557,8 +555,8 @@ def resolve_compass_signal_prompt() -> str:
 
 
 def resolve_chat_argv() -> list[str]:
-    """Resolve non-TUI CLI entrypoint for scripted chat calls."""
-    return resolve_non_tui_cli_argv()
+    """Resolve the CLI entrypoint used for scripted chat calls."""
+    return resolve_chat_cli_argv()
 
 
 def read_hermes_config_value(hermes_argv: list[str], key: str, logger: TraceLogger) -> str:
@@ -608,38 +606,6 @@ def resolve_hermes_call_profiles(
     return profiles
 
 
-def maybe_rename_session(session: HermesSessionState, logger: TraceLogger) -> None:
-    if session.mode != "chat":
-        return
-    if not session.session_id:
-        return
-    if not session.session_name.strip():
-        return
-    if not session.rename_needed:
-        return
-    if session.session_id in session.renamed_session_ids:
-        return
-    if not session.hermes_argv:
-        return
-
-    cmd = list(session.hermes_argv)
-    cmd.extend(["sessions", "rename", session.session_id, session.session_name])
-    result = run_subprocess_text(cmd, timeout=SESSION_COMMAND_TIMEOUT_SECONDS, env=os.environ.copy())
-    if result.timed_out:
-        logger.log(f"Session rename timed out for {session.session_id}")
-        return
-    if result.launch_error:
-        logger.log(f"Session rename launch failed for {session.session_id}: {result.stderr[:300]}")
-        return
-    if result.returncode != 0:
-        err = (result.stderr or result.stdout or "").strip()[:300]
-        logger.log(f"Session rename failed for {session.session_id}: {err}")
-        return
-    logger.log(f"Session renamed: {session.session_id} -> '{session.session_name}'")
-    session.renamed_session_ids.add(session.session_id)
-    session.rename_needed = False
-
-
 def run_hermes_raw(
     prompt: str,
     model: str,
@@ -661,8 +627,7 @@ def run_hermes_raw(
         oneshot=session.mode != "chat",
     )
     result = run_hermes_call(
-        cli_argv=(session.chat_argv or resolve_non_tui_cli_argv()) if session.mode == "chat" else session.hermes_argv,
-        admin_argv=session.hermes_argv,
+        cli_argv=(session.chat_argv or resolve_chat_cli_argv()) if session.mode == "chat" else session.hermes_argv,
         prompt=prompt,
         profile=profile,
         registry_path=session.session_state_file,
@@ -677,11 +642,7 @@ def run_hermes_raw(
         return f"[ERR:hermes_exit_{result.returncode}]", 0.0
 
     if session.mode == "chat":
-        original_session_id = session.session_id
         session.session_id = result.session_id
-        if original_session_id and result.session_id != original_session_id:
-            session.rename_needed = True
-        maybe_rename_session(session, logger)
     stdout_text = result.stdout
 
     text = sanitize_hermes_output(stdout_text or "")
@@ -828,7 +789,7 @@ def run_hermes_hindsight_reflect(
     query: str, task: AreaSignalTask, profile: HermesCallProfile, logger: TraceLogger
 ) -> str:
     """Ask Hermes to invoke hindsight_reflect in its dedicated call profile."""
-    cli_argv = resolve_non_tui_cli_argv()
+    cli_argv = resolve_chat_cli_argv()
     if not cli_argv:
         raise RuntimeError("Hermes command unavailable")
     request = (
@@ -840,7 +801,6 @@ def run_hermes_hindsight_reflect(
 
     result = run_hermes_call(
         cli_argv=cli_argv,
-        admin_argv=resolve_hermes_argv(),
         prompt=request,
         profile=profile,
         registry_path=SESSION_STATE_FILE,
@@ -1218,7 +1178,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--session-state-file",
         default=str(SESSION_STATE_FILE),
-        help="Path to JSON state file that stores persistent Daily Compass session_id",
+        help="Path to JSON state file holding per-profile model overrides and last observed session ids",
     )
     p.add_argument(
         "--session-mode",
@@ -1244,18 +1204,13 @@ def main() -> int:
         chat_argv=resolve_chat_argv(),
         session_name=str(args.session_title or DEFAULT_SESSION_TITLE).strip() or DEFAULT_SESSION_TITLE,
         session_state_file=Path(str(args.session_state_file)).expanduser(),
-        rename_needed=args.session_mode == "chat",
     )
     session.call_profiles = resolve_hermes_call_profiles(session.session_state_file, session.hermes_argv, logger)
     if session.mode == "chat":
         logger.log("Hermes session mode: chat (single session for this run)")
         profile = session.call_profiles["orchestration"]
-        restored_session_id = load_named_session_id(session.session_state_file, profile, logger)
-        if restored_session_id:
-            session.session_id = restored_session_id
-            logger.log(f"Restored persistent session id: {restored_session_id}")
-        else:
-            logger.log("No persistent session id found; Daily Compass will create a new one")
+        session.session_id = load_named_session_id(session.session_state_file, profile, logger)
+        logger.log(f"Hermes session title: '{profile.session_name}' (last known id: {session.session_id or 'none'})")
     else:
         logger.log("Hermes session mode: oneshot")
     if not session.hermes_argv:

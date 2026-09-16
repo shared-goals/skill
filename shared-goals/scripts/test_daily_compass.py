@@ -907,6 +907,10 @@ Ignore.
         projected = shared.project_boundary_to_area_context(payload)
         self.assertEqual(set(projected.keys()), {"name", "key", "dimension", "signal", "lines"})
 
+    def test_sanitize_strips_chat_banner_lines_before_payload(self) -> None:
+        raw = '↪ restored workspace dir: /Users/shag/.hermes/scripts\nWarning: Unknown toolsets: messaging\n{"area": {}}'
+        self.assertEqual(shared.sanitize_hermes_output(raw), '{"area": {}}')
+
     def test_extract_session_id_accepts_multiple_formats(self) -> None:
         self.assertEqual(
             shared.extract_session_id("session_id: 20260713_080052_9ee155"),
@@ -999,7 +1003,7 @@ Ignore.
             self.assertEqual(profiles["shared-goals-reflect"].model, "override-model")
             self.assertEqual(profiles["shared-goals-reflect"].provider, "override-provider")
 
-    def test_run_hermes_call_resumes_with_complete_profile(self) -> None:
+    def test_run_hermes_call_continues_named_session_with_complete_profile(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             state_path = Path(tmp_dir) / "state" / "daily-compass-session.json"
             profile = self.make_profiles()["shared-goals-reflect"]
@@ -1015,7 +1019,7 @@ Ignore.
             try:
                 with mock.patch.object(shared, "run_subprocess_text", side_effect=fake_run):
                     result = shared.run_hermes_call(
-                        cli_argv=["python", "cli.py"],
+                        cli_argv=["hermes", "chat"],
                         prompt="prompt",
                         profile=profile,
                         registry_path=state_path,
@@ -1027,20 +1031,23 @@ Ignore.
                     logger._fh.close()
 
             self.assertEqual(len(calls), 1)
-            self.assertIn("--resume", calls[0])
-            self.assertIn("reflect-id", calls[0])
+            self.assertNotIn("--resume", calls[0])
+            self.assertIn("--continue", calls[0])
+            self.assertIn("Daily Compass Reflect", calls[0])
+            self.assertIn("--create-if-missing", calls[0])
             self.assertIn("test-model", calls[0])
             self.assertIn("test-provider", calls[0])
             self.assertIn("memory", calls[0])
             self.assertIn("--query", calls[0])
             self.assertNotIn("-z", calls[0])
             self.assertEqual(result.returncode, 0)
+            self.assertTrue(result.resumed)
             log_text = logger.path.read_text(encoding="utf-8")
             self.assertIn("model=test-model", log_text)
             self.assertIn("toolsets=memory", log_text)
             self.assertIn(f"timeout={shared.HERMES_REFLECT_TIMEOUT_SECONDS}s", log_text)
 
-    def test_run_hermes_call_retries_only_missing_session(self) -> None:
+    def test_run_hermes_call_records_id_of_session_created_by_title(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             state_path = Path(tmp_dir) / "state" / "daily-compass-session.json"
             profile = self.make_profiles()["orchestration"]
@@ -1049,15 +1056,13 @@ Ignore.
 
             def fake_run(argv, *, timeout, env=None):
                 calls.append(argv)
-                if "--resume" in argv:
-                    return shared.SubprocessTextResult(returncode=1, stdout="", stderr="unknown session")
                 return shared.SubprocessTextResult(returncode=0, stdout="ok", stderr="session_id: fresh-session")
 
             logger = module.TraceLogger(verbose=False)
             try:
                 with mock.patch.object(shared, "run_subprocess_text", side_effect=fake_run):
                     result = shared.run_hermes_call(
-                        cli_argv=["cli.py"],
+                        cli_argv=["hermes", "chat"],
                         prompt="prompt",
                         profile=profile,
                         registry_path=state_path,
@@ -1068,10 +1073,9 @@ Ignore.
                 if hasattr(logger, "_fh") and not logger._fh.closed:
                     logger._fh.close()
 
-            self.assertEqual(len(calls), 2)
-            self.assertIn("--resume", calls[0])
-            self.assertNotIn("--resume", calls[1])
+            self.assertEqual(len(calls), 1)
             self.assertEqual(result.returncode, 0)
+            self.assertFalse(result.resumed)
             self.assertEqual(shared.load_named_session_id(state_path, profile, logger), "fresh-session")
 
     def test_run_hermes_call_does_not_retry_timeout(self) -> None:
@@ -1135,7 +1139,7 @@ Ignore.
             self.assertEqual(result.session_id, "orchestration-id")
             self.assertEqual(shared.load_named_session_id(state_path, profile), "orchestration-id")
 
-    def test_session_policy_change_rotates_only_affected_profile(self) -> None:
+    def test_session_title_keeps_session_across_policy_change(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             state_path = Path(tmp_dir) / "state.json"
             profile = self.make_profiles()["orchestration"]
@@ -1148,9 +1152,9 @@ Ignore.
                 toolsets=profile.toolsets,
                 timeout_seconds=profile.timeout_seconds,
             )
-            self.assertIsNone(shared.load_named_session_id(state_path, changed))
+            self.assertEqual(shared.load_named_session_id(state_path, changed), "old-id")
 
-    def test_new_session_is_renamed_by_executor(self) -> None:
+    def test_executor_never_renames_sessions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             state_path = Path(tmp_dir) / "state.json"
             profile = self.make_profiles()["shared-goals-reflect"]
@@ -1158,16 +1162,13 @@ Ignore.
 
             def fake_run(argv, *, timeout, env=None):
                 calls.append(argv)
-                if "sessions" in argv:
-                    return shared.SubprocessTextResult(returncode=0, stdout="", stderr="")
                 return shared.SubprocessTextResult(returncode=0, stdout="prompt", stderr="session_id: new-reflect-id")
 
             logger = module.TraceLogger(verbose=False)
             try:
                 with mock.patch.object(shared, "run_subprocess_text", side_effect=fake_run):
                     shared.run_hermes_call(
-                        cli_argv=["cli.py"],
-                        admin_argv=["hermes"],
+                        cli_argv=["hermes", "chat"],
                         prompt="prompt",
                         profile=profile,
                         registry_path=state_path,
@@ -1178,9 +1179,11 @@ Ignore.
                 if hasattr(logger, "_fh") and not logger._fh.closed:
                     logger._fh.close()
 
-            self.assertEqual(calls[1], ["hermes", "sessions", "rename", "new-reflect-id", "Daily Compass Reflect"])
+            self.assertEqual(len(calls), 1)
+            self.assertNotIn("rename", calls[0])
+            self.assertNotIn("sessions", calls[0])
 
-    def test_run_hermes_raw_chat_mode_resumes_session_via_shared_helper(self) -> None:
+    def test_run_hermes_raw_chat_mode_continues_named_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             state_path = Path(tmp_dir) / "state" / "daily-compass-session.json"
             profile = shared.HermesCallProfile(
@@ -1201,7 +1204,7 @@ Ignore.
             session = module.HermesSessionState(
                 mode="chat",
                 hermes_argv=["hermes"],
-                chat_argv=[],
+                chat_argv=["hermes", "chat"],
                 session_name="Daily Compass",
                 session_state_file=state_path,
             )
@@ -1215,8 +1218,10 @@ Ignore.
 
             self.assertEqual(text, '{"area": {}}')
             self.assertEqual(len(calls), 1)
-            self.assertIn("--resume", calls[0])
-            self.assertIn("20260820_190110_1f2393", calls[0])
+            self.assertNotIn("--resume", calls[0])
+            self.assertIn("--continue", calls[0])
+            self.assertIn("Daily Compass", calls[0])
+            self.assertIn("--create-if-missing", calls[0])
 
 
 if __name__ == "__main__":

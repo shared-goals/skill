@@ -128,6 +128,12 @@ def resolve_non_tui_cli_argv() -> list[str]:
     return []
 
 
+def resolve_chat_cli_argv() -> list[str]:
+    """Resolve `hermes chat`; only this entrypoint supports title-keyed sessions."""
+    hermes_argv = resolve_hermes_argv()
+    return [*hermes_argv, "chat"] if hermes_argv else []
+
+
 def build_hermes_query_cmd(prompt: str) -> list[str]:
     """Build robust query command that avoids TUI wrappers when available."""
     cli_argv = resolve_non_tui_cli_argv()
@@ -139,10 +145,13 @@ def build_hermes_query_cmd(prompt: str) -> list[str]:
     return []
 
 
+CLI_BANNER_PREFIXES = ("Warning: Unknown toolsets:", "↪ restored workspace dir:")
+
+
 def sanitize_hermes_output(text: str) -> str:
     """Strip known non-semantic CLI prefixes from scripted output."""
     lines = (text or "").splitlines()
-    while lines and lines[0].startswith("Warning: Unknown toolsets:"):
+    while lines and lines[0].startswith(CLI_BANNER_PREFIXES):
         lines.pop(0)
     while lines and not lines[0].strip():
         lines.pop(0)
@@ -490,19 +499,10 @@ def load_session_registry(path: Path, logger: LoggerLike | None = None) -> dict[
 
 
 def load_named_session_id(path: Path, profile: HermesCallProfile, logger: LoggerLike | None = None) -> str | None:
+    """Return the last observed session id for a profile (informational only)."""
     payload = load_session_registry(path, logger)
     record = payload["sessions"].get(profile.key)
     if not isinstance(record, dict):
-        return None
-    fingerprint = (
-        str(record.get("effective_model", record.get("model", ""))),
-        str(record.get("effective_provider", record.get("provider", ""))),
-        tuple(record.get("toolsets", [])),
-    )
-    expected = (profile.model, profile.provider, profile.toolsets)
-    if fingerprint != expected:
-        if logger is not None:
-            logger.log(f"Hermes session policy changed: key={profile.key}; starting a new session")
         return None
     return str(record.get("session_id", "")).strip() or None
 
@@ -534,28 +534,22 @@ def save_named_session(
             logger.log(f"Hermes session registry write failed: {exc}")
 
 
-def _is_missing_session_error(result: SubprocessTextResult) -> bool:
-    message = f"{result.stderr}\n{result.stdout}".lower()
-    return any(marker in message for marker in ("unknown session", "session not found", "no such session"))
-
-
 def run_hermes_call(
     *,
     cli_argv: list[str],
-    admin_argv: list[str] | None = None,
     prompt: str,
     profile: HermesCallProfile,
     registry_path: Path,
     logger: LoggerLike,
     label: str,
 ) -> HermesCallResult:
-    """Execute one policy-complete, resumable Hermes call."""
-    session_id = None if profile.oneshot else load_named_session_id(registry_path, profile, logger)
+    """Execute one policy-complete Hermes call against the profile's named session."""
+    known_id = None if profile.oneshot else load_named_session_id(registry_path, profile, logger)
 
-    def build(resume_id: str | None) -> list[str]:
+    def build() -> list[str]:
         cmd = [*cli_argv]
-        if resume_id and not profile.oneshot:
-            cmd.extend(["--resume", resume_id])
+        if not profile.oneshot:
+            cmd.extend(["--continue", profile.session_name, "--create-if-missing"])
         cmd.extend(["--model", profile.model, "--provider", profile.provider])
         if profile.toolsets:
             cmd.extend(["--toolsets", ",".join(profile.toolsets)])
@@ -567,32 +561,19 @@ def run_hermes_call(
 
     logger.log(
         f"Hermes call start: label={label} session={profile.key} "
-        f"id={session_id or 'new'} model={profile.model} provider={profile.provider} "
+        f"title='{profile.session_name}' id={known_id or 'unknown'} "
+        f"model={profile.model} provider={profile.provider} "
         f"toolsets={','.join(profile.toolsets) or 'default'} timeout={profile.timeout_seconds}s"
     )
     started = monotonic()
-    resumed = bool(session_id)
-    result = run_subprocess_text(build(session_id), timeout=profile.timeout_seconds, env=os.environ.copy())
-    if session_id and not profile.oneshot and _is_missing_session_error(result):
-        logger.log(f"Hermes session missing: label={label} id={session_id}; starting a new session")
-        resumed = False
-        result = run_subprocess_text(build(None), timeout=profile.timeout_seconds, env=os.environ.copy())
+    result = run_subprocess_text(build(), timeout=profile.timeout_seconds, env=os.environ.copy())
     elapsed = monotonic() - started
     new_id = extract_session_id(result.stderr) if result.returncode == 0 else None
     if new_id and not profile.oneshot:
         save_named_session(registry_path, profile, new_id, logger)
-        if admin_argv and new_id != session_id:
-            rename_result = run_subprocess_text(
-                [*admin_argv, "sessions", "rename", new_id, profile.session_name],
-                timeout=SESSION_COMMAND_TIMEOUT_SECONDS,
-                env=os.environ.copy(),
-            )
-            logger.log(
-                f"Hermes session rename: key={profile.key} id={new_id} "
-                f"returncode={rename_result.returncode} timed_out={rename_result.timed_out}"
-            )
+    resumed = bool(new_id) and new_id == known_id
     logger.log(
-        f"Hermes call finish: label={label} session={profile.key} id={new_id or session_id or 'unknown'} "
+        f"Hermes call finish: label={label} session={profile.key} id={new_id or known_id or 'unknown'} "
         f"elapsed={elapsed:.1f}s resumed={resumed} returncode={result.returncode} "
         f"timed_out={result.timed_out} launch_error={result.launch_error}"
     )
@@ -601,7 +582,7 @@ def run_hermes_call(
         stdout=result.stdout,
         stderr=result.stderr,
         elapsed_seconds=elapsed,
-        session_id=new_id or session_id,
+        session_id=new_id or known_id,
         resumed=resumed,
         timed_out=result.timed_out,
         launch_error=result.launch_error,

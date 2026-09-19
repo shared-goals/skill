@@ -125,7 +125,9 @@ class DailyCompassPureTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0][0], "hindsight_reflect")
         self.assertIn("Hungry #sg-photo hunger:14d", calls[0][1]["query"])
-        self.assertEqual(result.area["lines"][1]["signal"], prompt)
+        self.assertEqual(len(result.area["lines"]), 1)
+        self.assertEqual(result.area["lines"][0]["title"], "Hungry #sg-photo hunger:14d")
+        self.assertEqual(result.area["lines"][0]["signal"], prompt)
 
     def test_shared_goals_reflection_sanitizes_multiline_signal(self) -> None:
         raw = "**Prompt**\n\n> Quoted line one\n> Quoted line two\n\nMore prose after a blank line"
@@ -163,6 +165,45 @@ class DailyCompassPureTests(unittest.TestCase):
         # be parsed as a Markdown/Telegram blockquote when rendered downstream.
         self.assertNotIn("\n", stored)
         self.assertEqual(stored, "Prompt > Quoted line one > Quoted line two More prose after a blank line")
+
+    def test_shared_goals_reflection_keeps_hungriest_goal_when_reflection_fails(self) -> None:
+        def fake_reflect(query: str, _task: object, _profile: object, _logger: object) -> str:
+            raise RuntimeError("empty reflection")
+
+        task = module.AreaSignalTask(
+            index=0,
+            key="shared-goals",
+            label="area:shared-goals",
+            area={
+                "name": "Shared Goals",
+                "key": "shared-goals",
+                "dimension": "faith",
+                "status": "ok",
+                "reason": "",
+                "signal": "",
+                "lines": [
+                    {"title": "Less hungry #sg-less hunger:6d", "body": "Later", "signal": ""},
+                    {"title": "Hungry #sg-photo hunger:14d", "body": "Do photos", "signal": ""},
+                ],
+            },
+            area_prompt="",
+            prompt="",
+            signal_max_chars=2000,
+        )
+        logger = module.TraceLogger(verbose=False)
+        try:
+            with mock.patch.object(module, "run_hermes_hindsight_reflect", side_effect=fake_reflect):
+                result = module.run_shared_goals_reflection(
+                    task, logger, self.make_profiles()["shared-goals-reflect"]
+                )
+        finally:
+            if hasattr(logger, "_fh") and not logger._fh.closed:
+                logger._fh.close()
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.reason, "hindsight_reflect_failed")
+        self.assertEqual(len(result.area["lines"]), 1)
+        self.assertEqual(result.area["lines"][0]["title"], "Hungry #sg-photo hunger:14d")
 
     def test_json_area_signal_contract_uses_area_limit(self) -> None:
         contract = module.json_area_signal_contract({"signal_max_chars": 2000})

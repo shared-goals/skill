@@ -745,8 +745,7 @@ def run_shared_goals_reflection(
         return int(match.group(1)) if match else -1
 
     candidates = [line for line in lines if isinstance(line, dict)]
-    selected = max(enumerate(candidates), key=lambda item: (hunger_days(item[1]), -item[0]))
-    selected_index, selected_line = selected
+    _, selected_line = max(enumerate(candidates), key=lambda item: (hunger_days(item[1]), -item[0]))
     goal_title = str(selected_line.get("title", "")).strip()
     goal_body = str(selected_line.get("body", "")).strip()
     query = (
@@ -775,14 +774,21 @@ def run_shared_goals_reflection(
         # this raw, so it must already be single-line and fence/quote-marker safe.
         prompt = sanitize_logos_task_text(prompt)
         updated_area = hydrate_boundary_area(task.area)
-        updated_lines = [dict(line) for line in candidates]
-        updated_lines[selected_index]["signal"] = prompt
-        updated_area["lines"] = updated_lines
+        updated_line = dict(selected_line)
+        updated_line["signal"] = prompt
+        updated_area["lines"] = [updated_line]
         logger.log(f"Hindsight reflect done: {len(prompt)} chars")
         return SignalJobResult(key=task.key, area=updated_area, reason="hindsight_reflected", ok=True)
     except Exception as exc:
         logger.log(f"Hindsight reflect failed: {exc}")
-        return SignalJobResult(key=task.key, area=None, reason="hindsight_reflect_failed", ok=False)
+        updated_area = hydrate_boundary_area(task.area)
+        updated_area["lines"] = [dict(selected_line)]
+        return SignalJobResult(
+            key=task.key,
+            area=updated_area,
+            reason="hindsight_reflect_failed",
+            ok=False,
+        )
 
 
 def run_hermes_hindsight_reflect(
@@ -872,11 +878,12 @@ def run_area_signal_batch(
     logger.log(f"Phase 3 area signal queue prepared: {len(tasks)} prompt(s)")
     for task in tasks:
         result = execute_area_signal_task(task, context)
+        if result.area:
+            runtime["areas"][task.index] = result.area
         if not result.ok or not result.area:
             failed += 1
             logger.log(f"Phase 3 area signal failed: {task.label} ({result.reason})")
             continue
-        runtime["areas"][task.index] = result.area
         processed += 1
     logger.log(f"Phase 3 area signal complete: processed={processed}, failed={failed}")
 

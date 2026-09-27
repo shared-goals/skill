@@ -490,7 +490,9 @@ def resolve_compass_signal_prompt() -> str:
     return prompt or DEFAULT_COMPASS_PROMPT
 
 
-def read_hermes_config_value(hermes_argv: list[str], key: str, logger: TraceLogger) -> str:
+def read_hermes_config_value(
+    hermes_argv: list[str], key: str, logger: TraceLogger, *, allow_empty: bool = False
+) -> str:
     result = run_subprocess_text(
         [*hermes_argv, "config", "get", key],
         timeout=SESSION_COMMAND_TIMEOUT_SECONDS,
@@ -500,7 +502,7 @@ def read_hermes_config_value(hermes_argv: list[str], key: str, logger: TraceLogg
         detail = (result.stderr or result.stdout).strip()
         raise RuntimeError(f"Unable to read Hermes config '{key}': {detail or result.returncode}")
     value = result.stdout.strip()
-    if not value:
+    if not value and not allow_empty:
         raise RuntimeError(f"Hermes config '{key}' is empty")
     logger.log(f"Resolved Hermes config: {key}={value}")
     return value
@@ -510,8 +512,8 @@ def resolve_hermes_call_profiles(
     registry_path: Path | None, hermes_argv: list[str], logger: TraceLogger
 ) -> dict[str, HermesCallProfile]:
     del registry_path
-    auxiliary_model = read_hermes_config_value(hermes_argv, "auxiliary.model", logger)
-    auxiliary_provider = read_hermes_config_value(hermes_argv, "auxiliary.provider", logger)
+    auxiliary_model = read_hermes_config_value(hermes_argv, "auxiliary.model", logger, allow_empty=True)
+    auxiliary_provider = read_hermes_config_value(hermes_argv, "auxiliary.provider", logger, allow_empty=True)
     if auxiliary_model.strip().lower() in {"", "auto"}:
         auxiliary_model = read_hermes_config_value(hermes_argv, "model.default", logger)
         logger.log("Daily Compass model: inherited Hermes model.default")

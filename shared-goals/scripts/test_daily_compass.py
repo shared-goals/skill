@@ -932,7 +932,7 @@ Ignore.
                 with mock.patch.object(
                     module,
                     "read_hermes_config_value",
-                    side_effect=lambda _argv, key, _logger: values[key],
+                    side_effect=lambda _argv, key, _logger, **_kwargs: values[key],
                 ) as read_config:
                     profiles = module.resolve_hermes_call_profiles(state_path, ["hermes"], logger)
             finally:
@@ -958,7 +958,7 @@ Ignore.
             with mock.patch.object(
                 module,
                 "read_hermes_config_value",
-                side_effect=lambda _argv, key, _logger: values[key],
+                side_effect=lambda _argv, key, _logger, **_kwargs: values[key],
             ):
                 profiles = module.resolve_hermes_call_profiles(None, ["hermes"], logger)
         finally:

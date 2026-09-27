@@ -1,0 +1,12 @@
+{
+  "text": "Pick the 20 strongest shots for the photo album before noon, starting with the September trip.",
+  "based_on": {
+    "memories": [
+      {"id": "mem-photo-1", "text": "User prefers finishing photo selection in the morning.", "type": "experience"},
+      {"id": "mem-photo-2", "text": "Photo album goal targets 20 photos.", "type": "world"}
+    ],
+    "mental_models": [],
+    "directives": []
+  },
+  "structured_output": null
+}

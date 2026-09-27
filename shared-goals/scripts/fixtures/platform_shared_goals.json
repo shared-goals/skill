@@ -1,0 +1,72 @@
+{
+  "generated_at": "2026-09-27T06:00:00+00:00",
+  "dimension_order": ["feeling", "faith", "will", "mind"],
+  "hunger_diagnostics": [
+    {"dimension": "feeling", "last_fed_at": null},
+    {"dimension": "faith", "last_fed_at": "2026-09-13T08:00:00+00:00"},
+    {"dimension": "will", "last_fed_at": "2026-09-13T08:00:00+00:00"},
+    {"dimension": "mind", "last_fed_at": "2026-09-25T08:00:00+00:00"}
+  ],
+  "dimensions": [
+    {
+      "dimension": "feeling",
+      "last_fed_at": null,
+      "goals": [
+        {
+          "contract_id": "c-music",
+          "goal_id": "sg-music",
+          "goal_tag": "#sg-music",
+          "goal_title": "Record a song",
+          "contract": {"cadence": "weekly", "time_minutes": 60},
+          "next_step_text": "- Tune the guitar\n- Record one take",
+          "happy_moment": null
+        }
+      ]
+    },
+    {
+      "dimension": "faith",
+      "last_fed_at": "2026-09-13T08:00:00+00:00",
+      "goals": [
+        {
+          "contract_id": "c-photo",
+          "goal_id": "sg-photo",
+          "goal_tag": "#sg-photo",
+          "goal_title": "Photo album",
+          "contract": {"cadence": "weekly", "time_minutes": 30},
+          "next_step_text": "Select 20 photos",
+          "happy_moment": null
+        }
+      ]
+    },
+    {
+      "dimension": "will",
+      "last_fed_at": "2026-09-13T08:00:00+00:00",
+      "goals": [
+        {
+          "contract_id": "c-run",
+          "goal_id": "sg-run",
+          "goal_tag": "#sg-run",
+          "goal_title": "Morning run",
+          "contract": {"cadence": "daily", "time_minutes": 20},
+          "next_step_text": "Run 3 km",
+          "happy_moment": null
+        }
+      ]
+    },
+    {
+      "dimension": "mind",
+      "last_fed_at": "2026-09-25T08:00:00+00:00",
+      "goals": [
+        {
+          "contract_id": "c-read",
+          "goal_id": "sg-read",
+          "goal_tag": "#sg-read",
+          "goal_title": "Read PRD",
+          "contract": {"cadence": "weekly", "time_minutes": 15},
+          "next_step_text": "Read ACCEPTANCE.md",
+          "happy_moment": null
+        }
+      ]
+    }
+  ]
+}

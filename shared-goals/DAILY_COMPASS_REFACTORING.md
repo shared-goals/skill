@@ -116,6 +116,7 @@ End-to-end
 
 0. **Freeze and commit baseline.** Commit current direct-reflect work and the `run_hermes_raw` `skip_memory` fix. This suppresses memory injection but does not establish zero-write safety; keep cron paused until the stateless cutover and live validation pass.
 1. **Test harness.** Add dev deps; move fixtures (boundary outputs, platform payload, reflect responses) to `scripts/fixtures/`; write T-CON-1, T-RANK-*, T-REN-1 against the current output to lock behavior.
+   - Done: `scripts/test_compass_harness.py` + `scripts/fixtures/`; `requires-python >=3.11` (cron venv); `live` marker skipped by default (`uv run pytest -m live`). Strict xfails pin the confirmed defects: never-fed goals rank last (`hunger:neverd` → -1), rendered order comes from `SKILL.md` instead of platform `dimension_order`, and platform outage reports `shared_goals_empty`.
 2. **Models.** `compass/models.py`: `AreaConfig`, `BoundaryPayload`, `Line`, `Evidence` (frozen), `AreaAdvice`, `SourceRef`, `CompassRun`. Replace custom YAML parser with `yaml.safe_load`. Green: T-CON-*.
 3. **Collect.** `compass/collect.py`: run boundary scripts (keep `ThreadPoolExecutor`, timeouts, env vars) and platform fetch. Green: T-FAIL-1, T-RANK-4.
 4. **Rank.** `compass/rank.py` from platform `dimension_order`; delete `hunger:Nd` title parsing. Green: T-RANK-*.

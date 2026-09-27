@@ -1,0 +1,51 @@
+{
+  "signal": "Ship the photo album before noon.",
+  "dimensions": ["faith", "will", "feeling", "mind"],
+  "areas": [
+    {
+      "name": "Calendar",
+      "key": "calendar",
+      "dimension": "will",
+      "status": "ok",
+      "reason": "",
+      "signal": "No events in next 48h",
+      "lines": [{"title": "Calendar", "url": "", "body": "No events in next 48h", "signal": ""}]
+    },
+    {
+      "name": "News",
+      "key": "news",
+      "dimension": "mind",
+      "status": "ok",
+      "reason": "",
+      "signal": "",
+      "lines": [
+        {"title": "Hindsight 0.10 released", "url": "https://example.com/hindsight", "body": "", "signal": "Read the changelog"}
+      ]
+    },
+    {
+      "name": "Shared Goals",
+      "key": "shared-goals",
+      "dimension": "faith",
+      "status": "ok",
+      "reason": "",
+      "signal": "",
+      "lines": [
+        {
+          "title": "Photo album #sg-photo #faith hunger:14d",
+          "url": "",
+          "body": "Select 20 photos",
+          "signal": "Pick the 20 strongest shots today."
+        }
+      ]
+    },
+    {
+      "name": "Weather",
+      "key": "weather",
+      "dimension": "feeling",
+      "status": "TBD",
+      "reason": "weather_unavailable",
+      "signal": "",
+      "lines": []
+    }
+  ]
+}

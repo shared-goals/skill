@@ -11,6 +11,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 SCRIPTS_DIR = Path(__file__).parent
 AREA_TEST = SCRIPTS_DIR / "area-test.py"
 
@@ -22,6 +24,7 @@ def _tail(text: str, lines: int = 80) -> str:
     return "\n".join(items[-lines:])
 
 
+@pytest.mark.live
 def test_shared_goals_area_contract() -> None:
     result = subprocess.run(
         [sys.executable, str(AREA_TEST), "shared-goals"],

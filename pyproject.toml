@@ -2,7 +2,7 @@
 name = "shared-goals-skill-dev"
 version = "0.1.0"
 description = "Developer tooling for Shared Goals Hermes skill scripts"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 dependencies = []
 
 [dependency-groups]
@@ -10,16 +10,21 @@ dev = [
   "pytest>=8.3.2,<9",
   "ruff>=0.6.9,<1",
   "rich>=13.9.4,<14",
+  "pydantic>=2.13,<3",
+  "jinja2>=3.1,<4",
+  "pyyaml>=6.0,<7",
+  "hindsight-client>=0.6.1,<0.7",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["shared-goals/scripts"]
 python_files = ["test_*.py"]
-addopts = "-q"
+addopts = "-q -m 'not live'"
+markers = ["live: touches real services or area scripts; run with -m live"]
 
 [tool.ruff]
 line-length = 120
-target-version = "py39"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]

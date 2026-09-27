@@ -510,19 +510,21 @@ def resolve_hermes_call_profiles(
     registry_path: Path | None, hermes_argv: list[str], logger: TraceLogger
 ) -> dict[str, HermesCallProfile]:
     del registry_path
-    auxiliary_model = ""
-    auxiliary_provider = ""
+    auxiliary_model = read_hermes_config_value(hermes_argv, "auxiliary.model", logger)
+    auxiliary_provider = read_hermes_config_value(hermes_argv, "auxiliary.provider", logger)
+    if auxiliary_model.strip().lower() in {"", "auto"}:
+        auxiliary_model = read_hermes_config_value(hermes_argv, "model.default", logger)
+        logger.log("Daily Compass model: inherited Hermes model.default")
+    if auxiliary_provider.strip().lower() in {"", "auto"}:
+        auxiliary_provider = read_hermes_config_value(hermes_argv, "model.provider", logger)
+        logger.log("Daily Compass provider: inherited Hermes model.provider")
     profiles: dict[str, HermesCallProfile] = {}
     for key, (session_name, toolsets, timeout_seconds, skip_memory) in HERMES_PROFILE_SPECS.items():
-        model = auxiliary_model or read_hermes_config_value(hermes_argv, "auxiliary.model", logger)
-        provider = auxiliary_provider or read_hermes_config_value(hermes_argv, "auxiliary.provider", logger)
-        auxiliary_model = model
-        auxiliary_provider = provider
         profiles[key] = HermesCallProfile(
             key=key,
             session_name=session_name,
-            model=model,
-            provider=provider,
+            model=auxiliary_model,
+            provider=auxiliary_provider,
             toolsets=toolsets,
             timeout_seconds=timeout_seconds,
             skip_memory=skip_memory,

@@ -946,6 +946,29 @@ Ignore.
             self.assertEqual(profiles["shared-goals-reflect"].provider, "aux-provider")
             self.assertEqual(profiles["shared-goals-reflect"].toolsets, ("memory",))
 
+    def test_call_profiles_inherit_main_model_when_auxiliary_is_auto(self) -> None:
+        values = {
+            "auxiliary.model": "auto",
+            "auxiliary.provider": "auto",
+            "model.default": "default-model",
+            "model.provider": "default-provider",
+        }
+        logger = module.TraceLogger(verbose=False)
+        try:
+            with mock.patch.object(
+                module,
+                "read_hermes_config_value",
+                side_effect=lambda _argv, key, _logger: values[key],
+            ):
+                profiles = module.resolve_hermes_call_profiles(None, ["hermes"], logger)
+        finally:
+            if hasattr(logger, "_fh") and not logger._fh.closed:
+                logger._fh.close()
+
+        self.assertEqual(profiles["orchestration"].model, "default-model")
+        self.assertEqual(profiles["orchestration"].provider, "default-provider")
+        self.assertEqual(profiles["shared-goals-reflect"].model, "default-model")
+
     def test_run_hermes_raw_uses_stateless_auxiliary_call(self) -> None:
         logger = module.TraceLogger(verbose=False)
         session = module.HermesSessionState(mode="chat", hermes_argv=[], chat_argv=[])

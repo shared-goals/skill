@@ -47,7 +47,6 @@ from daily_compass_shared import (
     normalize_text,
     parse_json_object,
     project_boundary_to_area_context,
-    resolve_chat_cli_argv,
     resolve_hermes_argv,
     run_subprocess_text,
     safe_str_key,
@@ -486,11 +485,6 @@ def resolve_compass_signal_prompt() -> str:
     text = SHARED_GOALS_SKILL.read_text(encoding="utf-8", errors="replace")
     prompt = normalize_block(extract_section(text, "Compass signal"))
     return prompt or DEFAULT_COMPASS_PROMPT
-
-
-def resolve_chat_argv() -> list[str]:
-    """Resolve the CLI entrypoint used for scripted chat calls."""
-    return resolve_chat_cli_argv()
 
 
 def read_hermes_config_value(hermes_argv: list[str], key: str, logger: TraceLogger) -> str:

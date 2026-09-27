@@ -19,6 +19,8 @@ class AreaConfig(BaseModel):
     skill: str = Field(min_length=1)
     status: str
     signal_max_chars: int = 50
+    memory_tags: tuple[str, ...] = ()
+    memory_tags_match: Literal["any", "all", "any_strict", "all_strict"] = "any"
 
     @field_validator("signal_max_chars")
     @classmethod

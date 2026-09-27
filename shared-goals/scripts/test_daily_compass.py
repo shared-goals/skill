@@ -87,9 +87,9 @@ class DailyCompassPureTests(unittest.TestCase):
         calls: list[tuple[str, dict[str, str]]] = []
         prompt = "Work on the selected goal with the next concrete action first. #sg-photo"
 
-        def fake_reflect(query: str, _task: object, _logger: object) -> str:
+        def fake_reflect(query: str, _task: object, _logger: object) -> object:
             calls.append(("hindsight_reflect", {"query": query}))
-            return prompt
+            return module.Reflection(signal=prompt, memory_ids=("mem-1",))
 
         task = module.AreaSignalTask(
             index=0,
@@ -130,12 +130,13 @@ class DailyCompassPureTests(unittest.TestCase):
         self.assertEqual(len(result.area["lines"]), 1)
         self.assertEqual(result.area["lines"][0]["title"], "Hungry #sg-photo hunger:14d")
         self.assertEqual(result.area["lines"][0]["signal"], prompt)
+        self.assertEqual([ref.id for ref in result.advice.source_refs], ["shared-goals:0", "mem-1"])
 
     def test_shared_goals_reflection_sanitizes_multiline_signal(self) -> None:
         raw = "**Prompt**\n\n> Quoted line one\n> Quoted line two\n\nMore prose after a blank line"
 
-        def fake_reflect(query: str, _task: object, _logger: object) -> str:
-            return raw
+        def fake_reflect(query: str, _task: object, _logger: object) -> object:
+            return module.Reflection(signal=raw, memory_ids=())
 
         task = module.AreaSignalTask(
             index=0,
@@ -195,9 +196,7 @@ class DailyCompassPureTests(unittest.TestCase):
         logger = module.TraceLogger(verbose=False)
         try:
             with mock.patch.object(module, "run_hindsight_reflect", side_effect=fake_reflect):
-                result = module.run_shared_goals_reflection(
-                    task, logger, self.make_profiles()["shared-goals-reflect"]
-                )
+                result = module.run_shared_goals_reflection(task, logger, self.make_profiles()["shared-goals-reflect"])
         finally:
             if hasattr(logger, "_fh") and not logger._fh.closed:
                 logger._fh.close()
@@ -206,41 +205,6 @@ class DailyCompassPureTests(unittest.TestCase):
         self.assertEqual(result.reason, "hindsight_reflect_failed")
         self.assertEqual(len(result.area["lines"]), 1)
         self.assertEqual(result.area["lines"][0]["title"], "Hungry #sg-photo hunger:14d")
-
-    def test_direct_hindsight_reflect_posts_query_and_reads_text(self) -> None:
-        class FakeResponse:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc_value, traceback):
-                return False
-
-            def read(self) -> bytes:
-                return b'{"text":"direct answer"}'
-
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            home = Path(tmp_dir)
-            config_dir = home / ".hermes" / "hindsight"
-            config_dir.mkdir(parents=True)
-            (config_dir / "config.json").write_text(
-                json.dumps({"api_url": "http://hindsight.test", "bank_id": "hermes-test"}),
-                encoding="utf-8",
-            )
-            logger = module.TraceLogger(verbose=False)
-            try:
-                with (
-                    mock.patch.object(module, "HOME", home),
-                    mock.patch.object(module, "urlopen", return_value=FakeResponse()) as open_mock,
-                ):
-                    result = module.run_hindsight_reflect("query", mock.sentinel.task, logger)
-            finally:
-                if hasattr(logger, "_fh") and not logger._fh.closed:
-                    logger._fh.close()
-
-        request = open_mock.call_args.args[0]
-        self.assertEqual(result, "direct answer")
-        self.assertEqual(request.full_url, "http://hindsight.test/v1/default/banks/hermes-test/reflect")
-        self.assertEqual(json.loads(request.data), {"query": "query", "budget": "low", "max_tokens": 256})
 
     def test_json_area_signal_contract_uses_area_limit(self) -> None:
         contract = module.json_area_signal_contract({"signal_max_chars": 2000})
@@ -955,7 +919,9 @@ Ignore.
         self.assertEqual(set(projected.keys()), {"name", "key", "dimension", "signal", "lines"})
 
     def test_sanitize_strips_chat_banner_lines_before_payload(self) -> None:
-        raw = '↪ restored workspace dir: /Users/shag/.hermes/scripts\nWarning: Unknown toolsets: messaging\n{"area": {}}'
+        raw = (
+            '↪ restored workspace dir: /Users/shag/.hermes/scripts\nWarning: Unknown toolsets: messaging\n{"area": {}}'
+        )
         self.assertEqual(shared.sanitize_hermes_output(raw), '{"area": {}}')
 
     def test_extract_session_id_accepts_multiple_formats(self) -> None:

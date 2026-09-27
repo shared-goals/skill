@@ -22,13 +22,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
 import shared_goals_platform as sg_platform
 from compass.collect import boundary_script, collect_areas
 from compass.config import build_skill_index, load_active_areas
-from compass.models import AreaConfig, Evidence
+from compass.memory import Reflection, TagsMatch, open_memory_reader
+from compass.models import AreaAdvice, AreaConfig, Evidence, SourceRef
 from compass.rank import dimension_order, hungriest_line
 from daily_compass_shared import (
     AREA_SIGNAL_VERIFICATION_BASE_LINES,
@@ -96,6 +95,7 @@ class SignalJobResult:
     area: BoundaryAreaContext | None
     reason: str
     ok: bool
+    advice: AreaAdvice | None = None
 
 
 @dataclass
@@ -107,6 +107,8 @@ class AreaSignalTask:
     area_prompt: str
     prompt: str
     signal_max_chars: int = 50
+    memory_tags: tuple[str, ...] = ()
+    memory_tags_match: TagsMatch = "any"
 
 
 @dataclass
@@ -295,6 +297,7 @@ def runtime_json_snapshot(runtime: CompassContext) -> dict[str, Any]:
             "signal": str(runtime.get("signal", "")),
             "dimensions": runtime.get("dimensions", []),
         },
+        "advice": runtime.get("advice", {}),
         "areas": [],
     }
     for area in runtime.get("areas", []):
@@ -685,26 +688,30 @@ def run_shared_goals_reflection(
     )
     logger.log(f"Hindsight reflect start: {goal_title}")
     try:
-        response = run_hindsight_reflect(query, task, logger)
-        try:
-            payload = json.loads(response)
-        except json.JSONDecodeError:
-            payload = {"result": response}
-        prompt = str(payload.get("result", payload.get("text", ""))).strip()
+        reflection = run_hindsight_reflect(query, task, logger)
+        prompt = reflection.signal
         if not prompt or prompt.startswith("[ERROR") or prompt.startswith("{"):
             raise RuntimeError(prompt or "empty reflection")
         prompt = truncate_signal_text(prompt, task.signal_max_chars)
         # Also feeds the Telegram/cron template (`- ... — *{signal}*`) which embeds
         # this raw, so it must already be single-line and fence/quote-marker safe.
         prompt = sanitize_logos_task_text(prompt)
+        advice = AreaAdvice(
+            area=task.key,
+            signal=prompt,
+            source_refs=(
+                SourceRef(kind="line", id=f"{task.key}:{lines.index(selected_line)}"),
+                *(SourceRef(kind="memory", id=memory_id) for memory_id in reflection.memory_ids),
+            ),
+        )
         updated_area = hydrate_boundary_area(task.area)
         updated_line = dict(selected_line)
         updated_line["signal"] = prompt
         updated_area["lines"] = [updated_line]
-        logger.log(f"Hindsight reflect done: {len(prompt)} chars")
-        return SignalJobResult(key=task.key, area=updated_area, reason="hindsight_reflected", ok=True)
+        logger.log(f"Hindsight reflect done: {len(prompt)} chars, memories={len(reflection.memory_ids)}")
+        return SignalJobResult(key=task.key, area=updated_area, reason="hindsight_reflected", ok=True, advice=advice)
     except Exception as exc:
-        logger.log(f"Hindsight reflect failed: {exc}")
+        logger.log(f"Hindsight reflect failed: {exc!r}")
         updated_area = hydrate_boundary_area(task.area)
         updated_area["lines"] = [dict(selected_line)]
         return SignalJobResult(
@@ -715,43 +722,11 @@ def run_shared_goals_reflection(
         )
 
 
-def run_hindsight_reflect(query: str, task: AreaSignalTask, logger: TraceLogger) -> str:
-    """Call Hindsight directly so the reflect wrapper is not retained as a new turn."""
-    config_path = HOME / ".hermes" / "hindsight" / "config.json"
-    config: dict[str, Any] = {}
-    try:
-        config = json.loads(config_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        pass
-
-    api_url = str(config.get("api_url") or os.environ.get("HINDSIGHT_API_URL", "http://rock.lan:8889")).rstrip("/")
-    bank_id = str(config.get("bank_id") or "hermes").strip() or "hermes"
-    payload = json.dumps({"query": query, "budget": "low", "max_tokens": 256}).encode("utf-8")
-    headers = {"Content-Type": "application/json"}
-    api_key = str(config.get("apiKey") or os.environ.get("HINDSIGHT_API_KEY", "")).strip()
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-
-    request = Request(
-        f"{api_url}/v1/default/banks/{bank_id}/reflect",
-        data=payload,
-        headers=headers,
-        method="POST",
-    )
-    logger.log(f"Hindsight direct reflect start: bank={bank_id} query_chars={len(query)}")
-    try:
-        with urlopen(request, timeout=HERMES_REFLECT_TIMEOUT_SECONDS) as response:
-            result = json.loads(response.read().decode("utf-8"))
-    except (HTTPError, URLError, TimeoutError, OSError) as exc:
-        raise RuntimeError(f"Hindsight reflect request failed: {exc}") from exc
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise RuntimeError("Hindsight reflect returned invalid JSON") from exc
-
-    text = str(result.get("text", "")).strip() if isinstance(result, dict) else ""
-    if not text:
-        raise RuntimeError("Hindsight reflect returned empty text")
-    logger.log(f"Hindsight direct reflect done: {len(text)} chars")
-    return text
+def run_hindsight_reflect(query: str, task: AreaSignalTask, logger: TraceLogger) -> Reflection:
+    logger.log(f"Hindsight reflect: tags={list(task.memory_tags)} ({task.memory_tags_match}) query_chars={len(query)}")
+    config = HOME / ".hermes" / "hindsight" / "config.json"
+    with open_memory_reader(config, timeout=HERMES_REFLECT_TIMEOUT_SECONDS) as reader:
+        return reader.reflect(query, max_tokens=256, tags=task.memory_tags, tags_match=task.memory_tags_match)
 
 
 def build_area_signal_tasks(runtime: CompassContext) -> list[AreaSignalTask]:
@@ -779,6 +754,8 @@ def build_area_signal_tasks(runtime: CompassContext) -> list[AreaSignalTask]:
                 area_prompt=area_prompt,
                 prompt=prompt,
                 signal_max_chars=int(meta.get("signal_max_chars", 50) or 50),
+                memory_tags=tuple(meta.get("memory_tags", ())),
+                memory_tags_match=meta.get("memory_tags_match", "any"),
             )
         )
     return tasks
@@ -813,6 +790,9 @@ def run_area_signal_batch(
         result = execute_area_signal_task(task, context)
         if result.area:
             runtime["areas"][task.index] = result.area
+        if result.advice:
+            runtime["advice"][task.key] = result.advice.model_dump(mode="json")
+            logger.log(f"Advice sources [{task.key}]: {[ref.id for ref in result.advice.source_refs]}")
         if not result.ok or not result.area:
             failed += 1
             logger.log(f"Phase 3 area signal failed: {task.label} ({result.reason})")
@@ -873,6 +853,7 @@ def build_runtime(
         "ranking_fallback": not from_platform,
         "areas": [],
         "area_meta": {},
+        "advice": {},
     }
 
     evidence = collect_areas(areas, skill_index, run_id=logger.path.stem, log=logger.log)
@@ -885,6 +866,8 @@ def build_runtime(
             "script_to_run": str(boundary_script(skill_dir, area.key)),
             "area_prompt": resolve_area_signal_prompt(skill_dir / "SKILL.md"),
             "signal_max_chars": area.signal_max_chars,
+            "memory_tags": area.memory_tags,
+            "memory_tags_match": area.memory_tags_match,
         }
         logger.log(f"Area log: {LOGS_DIR / f'{logger.path.stem}.{area.key}.log'}")
     return runtime

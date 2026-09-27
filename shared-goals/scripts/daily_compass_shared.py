@@ -619,6 +619,7 @@ class CompassContext(TypedDict):
     ranking_fallback: bool
     areas: list[BoundaryAreaContext]
     area_meta: dict[str, dict[str, str]]
+    advice: dict[str, dict[str, Any]]
 
 
 def parse_json_object(text: str) -> dict[str, Any] | None:

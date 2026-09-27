@@ -756,10 +756,6 @@ class DailyCompassPureTests(unittest.TestCase):
         self.assertIn("Will Goal", lines[0]["title"])
         self.assertIn("Faith Goal", lines[1]["title"])
 
-    def test_template_tokenize_minimal(self) -> None:
-        toks = module.tpl_tokenize("Hello {name}")
-        self.assertTrue(any(t[0] == "VAR" for t in toks))
-
     def test_trace_logger_creates_file_immediately(self) -> None:
         logger = module.TraceLogger(verbose=False)
         try:

@@ -59,6 +59,7 @@ from daily_compass_shared import (
     serialize_line_item,
     validate_json_response_strict,
 )
+from jinja2 import Environment
 
 HOME = Path.home()
 HERMES_AGENT_DIR = HOME / ".hermes" / "hermes-agent"
@@ -936,105 +937,8 @@ def load_template() -> str:
     return text.strip()
 
 
-def tpl_resolve(ctx: Any, path: str) -> Any:
-    val = ctx
-    for part in path.split("."):
-        if isinstance(val, dict):
-            val = val.get(part)
-        else:
-            return ""
-        if val is None:
-            return ""
-    return val
-
-
-def tpl_tokenize(text: str) -> list[tuple[str, Any]]:
-    tokens: list[tuple[str, Any]] = []
-    i = 0
-    while i < len(text):
-        j = text.find("{", i)
-        if j == -1:
-            if i < len(text):
-                tokens.append(("TEXT", text[i:]))
-            break
-        if j > i:
-            tokens.append(("TEXT", text[i:j]))
-        k = text.find("}", j + 1)
-        if k == -1:
-            tokens.append(("TEXT", text[j:]))
-            break
-        tag = text[j + 1 : k].strip()
-        if tag.startswith("foreach "):
-            m = re.match(r"foreach\s+(\w+)\s+in\s+(\S+)", tag)
-            tokens.append(("FOREACH", (m.group(1), m.group(2))) if m else ("TEXT", text[j : k + 1]))
-        elif tag == "/foreach":
-            tokens.append(("ENDFOREACH", ""))
-        elif tag.startswith("if "):
-            tokens.append(("IF", tag[3:].strip()))
-        elif tag == "/if":
-            tokens.append(("ENDIF", ""))
-        elif tag == "else":
-            tokens.append(("ELSE", ""))
-        else:
-            tokens.append(("VAR", tag))
-        i = k + 1
-    return tokens
-
-
-def tpl_render(tokens: list[tuple[str, Any]], pos: int, ctx: dict[str, Any]) -> tuple[str, int]:
-    out: list[str] = []
-    while pos < len(tokens):
-        typ, val = tokens[pos]
-        if typ == "TEXT":
-            out.append(val)
-            pos += 1
-        elif typ == "VAR":
-            out.append(str(tpl_resolve(ctx, val)))
-            pos += 1
-        elif typ == "IF":
-            cond = bool(tpl_resolve(ctx, val))
-            pos += 1
-            t_out, pos = tpl_render(tokens, pos, ctx)
-            f_out = ""
-            if pos < len(tokens) and tokens[pos][0] == "ELSE":
-                pos += 1
-                f_out, pos = tpl_render(tokens, pos, ctx)
-            if pos < len(tokens) and tokens[pos][0] == "ENDIF":
-                pos += 1
-            out.append(t_out if cond else f_out)
-        elif typ == "FOREACH":
-            var_name, coll_path = val
-            coll = tpl_resolve(ctx, coll_path)
-            pos += 1
-            body: list[tuple[str, Any]] = []
-            depth = 0
-            while pos < len(tokens):
-                t, v = tokens[pos]
-                if t == "FOREACH":
-                    depth += 1
-                elif t == "ENDFOREACH":
-                    if depth == 0:
-                        pos += 1
-                        break
-                    depth -= 1
-                body.append((t, v))
-                pos += 1
-            if isinstance(coll, list):
-                for item in coll:
-                    sub = dict(ctx)
-                    sub[var_name] = item
-                    rendered, _ = tpl_render(body, 0, sub)
-                    out.append(rendered)
-        elif typ in {"ELSE", "ENDIF", "ENDFOREACH"}:
-            break
-        else:
-            pos += 1
-    return "".join(out), pos
-
-
 def render_template(context: dict[str, Any]) -> str:
-    tokens = tpl_tokenize(load_template())
-    out, _ = tpl_render(tokens, 0, context)
+    out = Environment(autoescape=False, keep_trailing_newline=True).from_string(load_template()).render(context)
     out = re.sub(r"\n{3,}", "\n\n", out)
     return out.strip() + "\n"
 

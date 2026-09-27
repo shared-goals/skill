@@ -1,30 +1,30 @@
-☀️ *{weekday}, {date}*
+☀️ *{{ weekday }}, {{ date }}*
 
-{if ranking_fallback}
+{% if ranking_fallback %}
 _⚠️ Shared Goals platform unavailable — default dimension order_
-{/if}
+{% endif %}
 
-{if compass.signal}
-*{compass.signal}*
-{/if}
+{% if compass.signal %}
+*{{ compass.signal }}*
+{% endif %}
 
-{foreach dimension in dimensions}
-{dimension.emoji} **{dimension.NAME}**
+{% for dimension in dimensions %}
+{{ dimension.emoji }} **{{ dimension.NAME }}**
 
-{foreach area in dimension.areas}
-[{area.name}]{if area.signal} *{area.signal}*{/if}
+{% for area in dimension.areas %}
+[{{ area.name }}]{% if area.signal %} *{{ area.signal }}*{% endif %}
 
-{if area.lines}
+{% if area.lines %}
 
-{foreach line in area.lines}
-- {if line.url}[{line.title}]({line.url}){else}{line.title}{/if}{if line.body}: {line.body}{/if}{if line.display_signal} — {line.display_signal}{else}{if line.signal} — *{line.signal}*{/if}{/if}
-{/foreach}
-{else}
+{% for line in area.lines %}
+- {% if line.url %}[{{ line.title }}]({{ line.url }}){% else %}{{ line.title }}{% endif %}{% if line.body %}: {{ line.body }}{% endif %}{% if line.display_signal %} — {{ line.display_signal }}{% else %}{% if line.signal %} — *{{ line.signal }}*{% endif %}{% endif %}
+{% endfor %}
+{% else %}
 - [GUARD] no lines returned for this area
-{/if}
+{% endif %}
 
-{/foreach}
-{/foreach}
+{% endfor %}
+{% endfor %}
 
 ⚖️ PROPORTION OF THE DAY
 

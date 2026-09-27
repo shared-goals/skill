@@ -43,7 +43,6 @@ from daily_compass_shared import (
     area_context_definition_text,
     build_numbered_lines,
     extract_section,
-    load_session_registry,
     normalize_text,
     parse_json_object,
     project_boundary_to_area_context,
@@ -506,23 +505,15 @@ def read_hermes_config_value(hermes_argv: list[str], key: str, logger: TraceLogg
 def resolve_hermes_call_profiles(
     registry_path: Path | None, hermes_argv: list[str], logger: TraceLogger
 ) -> dict[str, HermesCallProfile]:
-    registry = load_session_registry(registry_path, logger) if registry_path is not None else {"sessions": {}}
-    sessions = registry.get("sessions", {})
+    del registry_path
     auxiliary_model = ""
     auxiliary_provider = ""
     profiles: dict[str, HermesCallProfile] = {}
     for key, (session_name, toolsets, timeout_seconds, skip_memory) in HERMES_PROFILE_SPECS.items():
-        record = sessions.get(key, {}) if isinstance(sessions, dict) else {}
-        model = str(record.get("model", "")).strip() if isinstance(record, dict) else ""
-        provider = str(record.get("provider", "")).strip() if isinstance(record, dict) else ""
-        if not model:
-            auxiliary_model = auxiliary_model or read_hermes_config_value(hermes_argv, "auxiliary.model", logger)
-            model = auxiliary_model
-        if not provider:
-            auxiliary_provider = auxiliary_provider or read_hermes_config_value(
-                hermes_argv, "auxiliary.provider", logger
-            )
-            provider = auxiliary_provider
+        model = auxiliary_model or read_hermes_config_value(hermes_argv, "auxiliary.model", logger)
+        provider = auxiliary_provider or read_hermes_config_value(hermes_argv, "auxiliary.provider", logger)
+        auxiliary_model = model
+        auxiliary_provider = provider
         profiles[key] = HermesCallProfile(
             key=key,
             session_name=session_name,

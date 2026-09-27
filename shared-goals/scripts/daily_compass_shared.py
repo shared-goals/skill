@@ -13,7 +13,6 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from time import monotonic
 from typing import Any, Protocol, TypedDict
 
 VALID_DIMENSIONS = {"faith", "will", "feeling", "mind"}
@@ -428,18 +427,6 @@ class HermesCallProfile:
     skip_memory: bool = False
 
 
-@dataclass
-class HermesCallResult:
-    returncode: int
-    stdout: str
-    stderr: str
-    elapsed_seconds: float
-    session_id: str | None
-    resumed: bool
-    timed_out: bool = False
-    launch_error: bool = False
-
-
 def run_subprocess_text(argv: list[str], *, timeout: int, env: dict[str, str] | None = None) -> SubprocessTextResult:
     """Run a subprocess and return normalized text outputs and status."""
     try:
@@ -463,132 +450,6 @@ def run_subprocess_text(argv: list[str], *, timeout: int, env: dict[str, str] | 
         stderr=proc.stderr or "",
         timed_out=False,
         launch_error=False,
-    )
-
-
-def extract_session_id(*texts: str) -> str | None:
-    """Find a Hermes session id in CLI stdout/stderr text."""
-    patterns = [
-        r"session[_\s-]*id\s*[:=]\s*`?([A-Za-z0-9_.:-]+)`?",
-        r"\b([0-9]{8}_[0-9]{6}_[a-f0-9]{6,})\b",
-    ]
-    for text in texts:
-        blob = str(text or "")
-        if not blob:
-            continue
-        for pattern in patterns:
-            match = re.search(pattern, blob, flags=re.IGNORECASE)
-            if not match:
-                continue
-            value = str(match.group(1)).strip()
-            if value:
-                return value
-    return None
-
-
-def load_session_registry(path: Path, logger: LoggerLike | None = None) -> dict[str, Any]:
-    if not path.exists():
-        return {"sessions": {}}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        if logger is not None:
-            logger.log(f"Hermes session registry read failed: {exc}")
-        return {"sessions": {}}
-    sessions = payload.get("sessions") if isinstance(payload, dict) else None
-    return payload if isinstance(sessions, dict) else {"sessions": {}}
-
-
-def load_named_session_id(path: Path, profile: HermesCallProfile, logger: LoggerLike | None = None) -> str | None:
-    """Return the last observed session id for a profile (informational only)."""
-    payload = load_session_registry(path, logger)
-    record = payload["sessions"].get(profile.key)
-    if not isinstance(record, dict):
-        return None
-    return str(record.get("session_id", "")).strip() or None
-
-
-def save_named_session(
-    path: Path, profile: HermesCallProfile, session_id: str, logger: LoggerLike | None = None
-) -> None:
-    if not session_id:
-        return
-    payload = load_session_registry(path, logger)
-    existing = payload["sessions"].get(profile.key)
-    record = dict(existing) if isinstance(existing, dict) else {}
-    record.update(
-        {
-            "session_id": session_id,
-            "session_name": profile.session_name,
-            "effective_model": profile.model,
-            "effective_provider": profile.provider,
-            "toolsets": list(profile.toolsets),
-            "updated_at": datetime.now().isoformat(timespec="seconds"),
-        }
-    )
-    payload["sessions"][profile.key] = record
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    except OSError as exc:
-        if logger is not None:
-            logger.log(f"Hermes session registry write failed: {exc}")
-
-
-def run_hermes_call(
-    *,
-    cli_argv: list[str],
-    prompt: str,
-    profile: HermesCallProfile,
-    registry_path: Path,
-    logger: LoggerLike,
-    label: str,
-) -> HermesCallResult:
-    """Execute one policy-complete Hermes call against the profile's named session."""
-    known_id = None if profile.oneshot else load_named_session_id(registry_path, profile, logger)
-
-    def build() -> list[str]:
-        cmd = [*cli_argv]
-        if not profile.oneshot:
-            cmd.extend(["--continue", profile.session_name, "--create-if-missing"])
-        cmd.extend(["--model", profile.model, "--provider", profile.provider])
-        if profile.toolsets:
-            cmd.extend(["--toolsets", ",".join(profile.toolsets)])
-        if profile.skip_memory:
-            cmd.append("--ignore-rules")
-        if profile.oneshot:
-            cmd.extend(["--oneshot", prompt])
-        else:
-            cmd.extend(["--query", prompt, "--quiet"])
-        return cmd
-
-    logger.log(
-        f"Hermes call start: label={label} session={profile.key} "
-        f"title='{profile.session_name}' id={known_id or 'unknown'} "
-        f"model={profile.model} provider={profile.provider} "
-        f"toolsets={','.join(profile.toolsets) or 'default'} timeout={profile.timeout_seconds}s"
-    )
-    started = monotonic()
-    result = run_subprocess_text(build(), timeout=profile.timeout_seconds, env=os.environ.copy())
-    elapsed = monotonic() - started
-    new_id = extract_session_id(result.stderr) if result.returncode == 0 else None
-    if new_id and not profile.oneshot:
-        save_named_session(registry_path, profile, new_id, logger)
-    resumed = bool(new_id) and new_id == known_id
-    logger.log(
-        f"Hermes call finish: label={label} session={profile.key} id={new_id or known_id or 'unknown'} "
-        f"elapsed={elapsed:.1f}s resumed={resumed} returncode={result.returncode} "
-        f"timed_out={result.timed_out} launch_error={result.launch_error}"
-    )
-    return HermesCallResult(
-        returncode=result.returncode,
-        stdout=result.stdout,
-        stderr=result.stderr,
-        elapsed_seconds=elapsed,
-        session_id=new_id or known_id,
-        resumed=resumed,
-        timed_out=result.timed_out,
-        launch_error=result.launch_error,
     )
 
 

@@ -152,8 +152,8 @@ Use this map directly from area-test output.
   - Ensure script exits 0 and prints valid JSON object.
 
 - `boundary_area_context_validated` fail:
-  - Add/fix required top-level keys and string field types.
-  - Ensure `status` is `ok|TBD|error`.
+  - Add/fix required top-level keys and string field types; no extra keys (only `status`, `reason`, `lines`, optional `signal`/`ts`).
+  - Ensure `status` is `ok|TBD|error` and every line has a non-blank `title`.
 
 - `boundary_key_match`, `boundary_name_match`, `boundary_dimension_match` fail:
   - Align boundary output with YAML key/name/dimension.

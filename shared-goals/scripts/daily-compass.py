@@ -18,7 +18,6 @@ import json
 import os
 import re
 import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -26,11 +25,11 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from compass.collect import boundary_script, collect_areas
 from compass.config import build_skill_index, load_active_areas
-from compass.models import AreaConfig
+from compass.models import AreaConfig, Evidence
 from daily_compass_shared import (
     AREA_SIGNAL_VERIFICATION_BASE_LINES,
-    BOUNDARY_SCRIPT_TIMEOUT_SECONDS,
     COMPASS_CONTEXT_STATE_FILE,
     HERMES_REFLECT_TIMEOUT_SECONDS,
     HERMES_SIGNAL_TIMEOUT_SECONDS,
@@ -49,7 +48,6 @@ from daily_compass_shared import (
     project_boundary_to_area_context,
     resolve_chat_cli_argv,
     resolve_hermes_argv,
-    run_boundary_script,
     run_hermes_call,
     run_subprocess_text,
     safe_str_key,
@@ -376,16 +374,15 @@ def validate_runtime_or_raise(runtime: dict[str, Any]) -> None:
                 raise ValueError("runtime_line_title_missing")
 
 
-def build_error_area(area: AreaConfig, reason: str) -> BoundaryAreaContext:
+def evidence_to_area(evidence: Evidence) -> BoundaryAreaContext:
     return {
-        "name": area.name,
-        "key": area.key,
-        "dimension": area.dimension,
-        "status": "error",
-        "reason": reason,
+        "name": evidence.name,
+        "key": evidence.key,
+        "dimension": evidence.dimension,
+        "status": evidence.status,
+        "reason": evidence.reason,
         "signal": "",
-        "lines": [],
-        "signal_max_chars": area.signal_max_chars,
+        "lines": [line.model_dump() for line in evidence.lines],
     }
 
 
@@ -894,66 +891,18 @@ def build_runtime(
         "area_meta": {},
     }
 
-    jobs: list[tuple[AreaConfig, Path, str, str]] = []
+    evidence = collect_areas(areas, skill_index, run_id=logger.path.stem, log=logger.log)
+    runtime["areas"] = [evidence_to_area(item) for item in evidence]
     for area in areas:
         skill_dir = skill_index.get(area.skill)
         if not skill_dir:
-            logger.log(f"Area '{area.key}': skill '{area.skill}' not found")
-            runtime["areas"].append(build_error_area(area, "skill_not_found"))
             continue
-
-        skill_md = skill_dir / "SKILL.md"
-        area_prompt = resolve_area_signal_prompt(skill_md)
-        script = skill_dir / "scripts" / f"daily-{area.key}-status.py"
-        if not script.exists():
-            logger.log(f"Area '{area.key}': missing boundary script {script}")
-            runtime["areas"].append(build_error_area(area, "boundary_script_missing"))
-            runtime["area_meta"][area.key] = {
-                "script_to_run": str(script),
-                "area_prompt": area_prompt,
-                "signal_max_chars": area.signal_max_chars,
-            }
-            continue
-
-        jobs.append((area, script, area_prompt, str(script)))
-
-    if jobs:
-        with ThreadPoolExecutor(max_workers=min(4, len(jobs))) as ex:
-            futures = {
-                ex.submit(
-                    run_boundary_script,
-                    area.key,
-                    script,
-                    BOUNDARY_SCRIPT_TIMEOUT_SECONDS,
-                    {
-                        **os.environ.copy(),
-                        "DAILY_COMPASS_RUN_ID": logger.path.stem,
-                        "DAILY_COMPASS_AREA_KEY": area.key,
-                    },
-                ): (area, area_prompt, script_s)
-                for (area, script, area_prompt, script_s) in jobs
-            }
-            for fut in as_completed(futures):
-                area, area_prompt, script_s = futures[fut]
-                result = fut.result()
-                runtime["area_meta"][area.key] = {
-                    "script_to_run": script_s,
-                    "area_prompt": area_prompt,
-                    "signal_max_chars": area.signal_max_chars,
-                }
-                logger.log(f"Run boundary: {area.key} -> {script_s}")
-                logger.log(f"Area log: {LOGS_DIR / f'{logger.path.stem}.{area.key}.log'}")
-                if not result.ok:
-                    runtime["areas"].append(build_error_area(area, result.stderr or "boundary_failed"))
-                    continue
-                boundary_area = hydrate_boundary_area(result.payload)
-                # Boundary scripts return minimal payload; metadata comes from YAML area config.
-                boundary_area["name"] = area.name
-                boundary_area["key"] = area.key
-                boundary_area["dimension"] = area.dimension
-                runtime["areas"].append(boundary_area)
-
-    runtime["areas"].sort(key=lambda a: a["name"].lower())
+        runtime["area_meta"][area.key] = {
+            "script_to_run": str(boundary_script(skill_dir, area.key)),
+            "area_prompt": resolve_area_signal_prompt(skill_dir / "SKILL.md"),
+            "signal_max_chars": area.signal_max_chars,
+        }
+        logger.log(f"Area log: {LOGS_DIR / f'{logger.path.stem}.{area.key}.log'}")
     return runtime
 
 

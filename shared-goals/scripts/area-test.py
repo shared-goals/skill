@@ -27,17 +27,15 @@ AREA_REFS_DIR = SHARED_GOALS_DIR / "references"
 if str(SHARED_GOALS_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SHARED_GOALS_SCRIPTS_DIR))
 
+from compass.collect import BoundaryError, run_boundary
 from compass.config import build_skill_index
 from compass.models import DIMENSIONS
 from daily_compass_shared import (
     ACTION_VERBS,
-    BOUNDARY_SCRIPT_TIMEOUT_SECONDS,
     COMMON_JSON_CONTRACT_PHRASES,
     extract_section,
     is_valid_area_context,
-    is_valid_boundary_area_context,
     is_valid_line_context,
-    run_boundary_script,
 )
 
 
@@ -277,47 +275,23 @@ def collect_infrastructure_checks(
     if not boundary.exists():
         return area_signal_guidance_detail
 
-    result = run_boundary_script(area_key, boundary, BOUNDARY_SCRIPT_TIMEOUT_SECONDS, os.environ.copy())
-    add_check(checks, "boundary_exec", result.ok, f"exit={result.returncode}", "infrastructure")
-    if not result.ok:
-        add_check(checks, "boundary_area_context_validated", False, "invalid AreaContext JSON", "infrastructure")
+    try:
+        payload = run_boundary(boundary, env=os.environ).model_dump()
+    except BoundaryError as exc:
+        reason = str(exc)
+        ran = reason == "boundary_schema_invalid"
+        add_check(checks, "boundary_exec", ran, "exit=0" if ran else reason, "infrastructure")
+        add_check(checks, "boundary_area_context_validated", False, reason, "infrastructure")
         return area_signal_guidance_detail
+    add_check(checks, "boundary_exec", True, "exit=0", "infrastructure")
+    add_check(checks, "boundary_status_valid", True, payload["status"], "infrastructure")
 
-    payload = result.payload
-    status_val = str(payload.get("status", "")).strip()
-    status_ok = status_val in {"ok", "TBD", "error"}
-    add_check(checks, "boundary_status_valid", status_ok, status_val or "missing", "infrastructure")
-    lines = payload.get("lines", [])
-
-    boundary_candidate = {
-        "status": str(payload.get("status", "")),
-        "reason": str(payload.get("reason", "")),
-        "signal": str(payload.get("signal", "")),
-        "lines": [
-            {
-                "title": str(x.get("title", "")),
-                "url": str(x.get("url", "")),
-                "body": str(x.get("body", "")),
-                "signal": str(x.get("signal", "")),
-            }
-            for x in (lines if isinstance(lines, list) else [])
-        ],
-    }
-    boundary_ctx_ok = is_valid_boundary_area_context(boundary_candidate, area_key)
     projected_area = {
         "name": name_val,
         "key": area_key,
         "dimension": dims[0] if dims else "mind",
-        "signal": str(boundary_candidate.get("signal", "")),
-        "lines": [
-            {
-                "title": str(x.get("title", "")),
-                "url": str(x.get("url", "")),
-                "body": str(x.get("body", "")),
-                "signal": str(x.get("signal", "")),
-            }
-            for x in boundary_candidate["lines"]
-        ],
+        "signal": payload["signal"],
+        "lines": list(payload["lines"]),
     }
     area_ctx_ok = is_valid_area_context(projected_area, area_key)
     line_ctx_ok = all(is_valid_line_context(x) for x in projected_area["lines"])
@@ -326,8 +300,8 @@ def collect_infrastructure_checks(
     add_check(
         checks,
         "boundary_area_context_validated",
-        boundary_ctx_ok,
-        "BoundaryAreaContext JSON + strict schema",
+        True,
+        "BoundaryPayload strict schema",
         "infrastructure",
     )
     add_check(

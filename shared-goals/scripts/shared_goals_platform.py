@@ -58,12 +58,13 @@ def _goal_dim_tags(goal: dict[str, Any], fallback_dimension: str) -> list[str]:
     return tags
 
 
-def fetch_platform_shared_goals() -> dict[str, Any]:
+def fetch_platform_shared_goals() -> dict[str, Any] | None:
+    """Return the Compass payload, or None when the platform is unconfigured or unreachable."""
     load_env_file()
     base_url = os.environ.get("SHARED_GOALS_API_BASE_URL", "").strip()
     agent_key_id = os.environ.get("SHARED_GOALS_AGENT_KEY_ID", "").strip()
     if not base_url or not agent_key_id:
-        return {"dimensions": []}
+        return None
 
     url = urljoin(base_url.rstrip("/") + "/", "api/v1/compass/shared-goals")
     request = Request(url, headers={"X-Agent-Key-Id": agent_key_id})
@@ -71,12 +72,10 @@ def fetch_platform_shared_goals() -> dict[str, Any]:
         with urlopen(request, timeout=10) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except (OSError, URLError, ValueError):
-        return {"dimensions": []}
+        return None
 
-    if not isinstance(payload, dict):
-        return {"dimensions": []}
-    if not isinstance(payload.get("dimensions"), list):
-        return {"dimensions": []}
+    if not isinstance(payload, dict) or not isinstance(payload.get("dimensions"), list):
+        return None
     return payload
 
 

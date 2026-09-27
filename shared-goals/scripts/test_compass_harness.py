@@ -26,8 +26,8 @@ FIXTURES = SCRIPTS_DIR / "fixtures"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-import daily_compass_shared as shared
 import shared_goals_platform as platform
+from compass.collect import run_boundary
 from compass.config import build_skill_index
 from compass.models import BoundaryPayload
 
@@ -98,7 +98,6 @@ def _selected_goal_title(lines: list[dict], logger, monkeypatch) -> str:
 def test_boundary_payload_contract_accepts_valid(name: str) -> None:
     payload = _fixture("boundary_payloads.json")["valid"][name]
     BoundaryPayload.model_validate(payload)
-    assert shared.validate_boundary_payload(payload) == (True, "valid")
 
 
 @pytest.mark.parametrize("reason", sorted(_fixture("boundary_payloads.json")["invalid"]))
@@ -106,7 +105,6 @@ def test_boundary_payload_contract_rejects_invalid(reason: str) -> None:
     payload = _fixture("boundary_payloads.json")["invalid"][reason]
     with pytest.raises(ValidationError):
         BoundaryPayload.model_validate(payload)
-    assert shared.validate_boundary_payload(payload) == (False, reason)
 
 
 def _active_area_scripts() -> list[tuple[str, Path]]:
@@ -127,9 +125,7 @@ def _active_area_scripts() -> list[tuple[str, Path]]:
 @pytest.mark.parametrize(("key", "script"), _active_area_scripts())
 def test_live_boundary_script_output_matches_contract(key: str, script: Path) -> None:
     assert script.exists(), f"{key}: missing {script}"
-    result = shared.run_boundary_script(key, script)
-    assert result.ok, f"{key}: {result.stderr}"
-    BoundaryPayload.model_validate(result.payload)
+    run_boundary(script)
 
 
 # T-RANK ----------------------------------------------------------------------
@@ -163,21 +159,32 @@ def test_equal_hunger_keeps_platform_order(logger, monkeypatch) -> None:
     assert "#sg-photo" in _selected_goal_title(lines, logger, monkeypatch)
 
 
-@pytest.mark.xfail(strict=True, reason="task 3: platform outage is reported as shared_goals_empty")
-def test_platform_unavailable_is_flagged(monkeypatch) -> None:
+@pytest.mark.parametrize("update_compass", [False, True])
+def test_platform_unavailable_is_flagged(update_compass: bool, tmp_path, monkeypatch) -> None:
     def refuse(*_args, **_kwargs):
         raise URLError("connection refused")
+
+    compass_md = tmp_path / "Compass.md"
+    compass_md.write_text(
+        "## Logos\n\n- [ ] keep me\n\n## Shared Goals\n\n- Photo #sg-photo hunger:3d\n", encoding="utf-8"
+    )
+    before = compass_md.read_text(encoding="utf-8")
+    argv = ["daily-shared-goals-status.py"]
+    if update_compass:
+        argv += ["--update-compass", "--compass-path", str(compass_md)]
 
     monkeypatch.setenv("SHARED_GOALS_API_BASE_URL", "http://platform.test")
     monkeypatch.setenv("SHARED_GOALS_AGENT_KEY_ID", "test-key")
     monkeypatch.setattr(platform, "load_env_file", lambda *_: None)
     monkeypatch.setattr(sg_status, "load_env_file", lambda *_: None)
     monkeypatch.setattr(platform, "urlopen", refuse)
-    monkeypatch.setattr(sys, "argv", ["daily-shared-goals-status.py"])
+    monkeypatch.setattr(sys, "argv", argv)
     out = io.StringIO()
     with redirect_stdout(out):
         assert sg_status.main() == 0
-    assert json.loads(out.getvalue())["reason"] == "platform_unavailable"
+    payload = BoundaryPayload.model_validate_json(out.getvalue())
+    assert (payload.status, payload.reason) == ("error", "platform_unavailable")
+    assert compass_md.read_text(encoding="utf-8") == before
 
 
 # T-REN-1 ---------------------------------------------------------------------

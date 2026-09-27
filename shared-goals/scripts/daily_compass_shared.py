@@ -592,16 +592,6 @@ def run_hermes_call(
     )
 
 
-@dataclass
-class BoundaryExecResult:
-    ok: bool
-    returncode: int
-    stdout: str
-    stderr: str
-    payload: dict[str, Any]
-    timed_out: bool = False
-
-
 class LineContext(TypedDict):
     title: str
     url: str
@@ -749,105 +739,6 @@ def is_valid_area_context(payload: dict[str, Any], expected_key: str = "") -> bo
         if not is_valid_line_context(line):
             return False
     return True
-
-
-def validate_boundary_payload(
-    payload: dict[str, Any], *, allow_ts: bool = True, allow_signal: bool = True
-) -> tuple[bool, str]:
-    """Validate minimal boundary payload and return (ok, reason)."""
-    allowed_keys = {"status", "reason", "lines"}
-    if allow_signal:
-        allowed_keys.add("signal")
-    if allow_ts:
-        allowed_keys.add("ts")
-
-    if not set(payload.keys()).issubset(allowed_keys):
-        return False, "extra_keys"
-
-    for required in ("status", "reason", "lines"):
-        if required not in payload:
-            return False, f"missing_{required}"
-
-    status = str(payload.get("status", "")).strip()
-    reason = payload.get("reason")
-    lines = payload.get("lines")
-
-    if status not in {"ok", "TBD", "error"}:
-        return False, "invalid_status"
-    if not isinstance(reason, str):
-        return False, "invalid_reason"
-    if not isinstance(lines, list):
-        return False, "invalid_lines"
-
-    for line in lines:
-        if not isinstance(line, dict):
-            return False, "line_not_dict"
-        if not is_valid_line_context(line):
-            return False, "invalid_line_context"
-
-    if "ts" in payload and not isinstance(payload.get("ts"), str):
-        return False, "invalid_ts"
-    if "signal" in payload and not isinstance(payload.get("signal"), str):
-        return False, "invalid_signal"
-
-    return True, "valid"
-
-
-def is_valid_boundary_area_context(payload: dict[str, Any], expected_key: str = "") -> bool:
-    ok, _reason = validate_boundary_payload(payload, allow_ts=False, allow_signal=True)
-    return ok
-
-
-def is_valid_boundary_area_payload(payload: dict[str, Any], expected_key: str = "") -> bool:
-    ok, _reason = validate_boundary_payload(payload, allow_ts=True, allow_signal=True)
-    return ok
-
-
-def run_boundary_script(
-    area_key: str,
-    script: Path,
-    timeout: int = BOUNDARY_SCRIPT_TIMEOUT_SECONDS,
-    env: dict[str, str] | None = None,
-) -> BoundaryExecResult:
-    result = run_subprocess_text([sys.executable, str(script)], timeout=timeout, env=env)
-    if result.timed_out:
-        return BoundaryExecResult(
-            ok=False, returncode=124, stdout="", stderr="boundary_timeout", payload={}, timed_out=True
-        )
-    if result.launch_error:
-        reason = (result.stderr or "boundary_exec_failed").strip()[:400]
-        return BoundaryExecResult(
-            ok=False, returncode=result.returncode, stdout="", stderr=reason or "boundary_exec_failed", payload={}
-        )
-
-    if result.returncode != 0:
-        reason = (result.stderr or "boundary_exec_failed").strip()[:400]
-        return BoundaryExecResult(
-            ok=False,
-            returncode=result.returncode,
-            stdout=result.stdout,
-            stderr=reason or "boundary_exec_failed",
-            payload={},
-        )
-
-    payload = parse_json_object(result.stdout)
-    if not payload:
-        return BoundaryExecResult(
-            ok=False, returncode=result.returncode, stdout=result.stdout, stderr="boundary_non_json", payload={}
-        )
-
-    if not is_valid_boundary_area_payload(payload, area_key):
-        return BoundaryExecResult(
-            ok=False,
-            returncode=result.returncode,
-            stdout=result.stdout,
-            stderr="boundary_schema_invalid",
-            payload=payload,
-        )
-
-    return BoundaryExecResult(
-        ok=True, returncode=result.returncode, stdout=result.stdout, stderr=result.stderr, payload=payload
-    )
 
 
 # Output and serialization helpers

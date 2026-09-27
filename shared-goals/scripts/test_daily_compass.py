@@ -940,29 +940,6 @@ Ignore.
         module.append_signal_note(area, "(prose stripped)")
         self.assertEqual(area["signal"], "initial (prose stripped)")
 
-    def test_boundary_area_context_validation_accepts_metadata(self) -> None:
-        payload = {
-            "status": "ok",
-            "reason": "",
-            "signal": "ok",
-            "lines": [{"title": "Samara", "url": "", "body": "", "signal": ""}],
-        }
-        self.assertTrue(shared.is_valid_boundary_area_context(payload, "weather"))
-
-    def test_boundary_area_context_validation_accepts_empty_signals(self) -> None:
-        payload = {
-            "status": "ok",
-            "reason": "",
-            "signal": "",
-            "lines": [
-                {"title": "Samara", "url": "", "body": "Clear", "signal": ""},
-                {"title": "Humidity", "url": "", "body": "40%", "signal": ""},
-            ],
-        }
-        self.assertTrue(shared.is_valid_boundary_area_context(payload, "weather"))
-        self.assertEqual(payload["signal"], "")
-        self.assertTrue(all(line["signal"] == "" for line in payload["lines"]))
-
     def test_project_boundary_to_area_context_drops_metadata(self) -> None:
         payload = {
             "name": "Weather",

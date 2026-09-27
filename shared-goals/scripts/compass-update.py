@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 from pathlib import Path
 
 from daily_compass_shared import load_json_snapshot, render_next_steps_from_compass_snapshot
@@ -257,6 +258,9 @@ def main() -> int:
             print(f"Created commits: {created}")
 
     payload = fetch_platform_shared_goals()
+    if payload is None:
+        print("Shared Goals platform unavailable; Compass.md left unchanged.", file=sys.stderr)
+        return 1
     update_compass_markdown(payload, path, logos_text=_read_logos_text(args))
 
     if console:

@@ -166,6 +166,9 @@ def main() -> int:
     if args.update_compass:
         maybe_sync_completed_tasks(Path(args.compass_path).expanduser())
     payload = fetch_platform_shared_goals()
+    if payload is None:
+        print(json.dumps(make_boundary_payload(status="error", reason="platform_unavailable", include_ts=True)))
+        return 0
 
     if args.update_compass:
         update_compass_markdown(payload, Path(args.compass_path).expanduser())

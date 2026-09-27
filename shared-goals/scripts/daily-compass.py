@@ -49,7 +49,6 @@ from daily_compass_shared import (
     normalize_text,
     parse_json_object,
     project_boundary_to_area_context,
-    resolve_hermes_argv,
     safe_str_key,
     sanitize_hermes_output,
     sanitize_logos_task_text,
@@ -603,9 +602,6 @@ def run_area_signal_job(
     area = task.area
     area_prompt = task.area_prompt
     prompt = task.prompt
-    if not session.hermes_argv:
-        return SignalJobResult(key=area_key, area=None, reason="hermes_unavailable", ok=False)
-
     if area_key == "shared-goals":
         return run_shared_goals_reflection(task, logger, session.call_profiles["shared-goals-reflect"])
 
@@ -951,9 +947,8 @@ def main() -> int:
         sys.stdout = TeeStream(orig_stdout, logger)
         sys.stderr = TeeStream(orig_stderr, logger)
     logger.log("daily-compass start")
-    hermes_argv = resolve_hermes_argv()
-    session = HermesSessionState(mode="stateless", hermes_argv=hermes_argv, chat_argv=[])
-    session.call_profiles = resolve_hermes_call_profiles(None, hermes_argv, logger)
+    session = HermesSessionState(mode="stateless", hermes_argv=[], chat_argv=[])
+    session.call_profiles = resolve_hermes_call_profiles(None, [], logger)
     logger.log("Hermes session mode: stateless auxiliary calls")
 
     def log_phase(title: str) -> None:

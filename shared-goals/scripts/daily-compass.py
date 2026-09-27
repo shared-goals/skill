@@ -23,6 +23,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from daily_compass_shared import (
     AREA_SIGNAL_VERIFICATION_BASE_LINES,
@@ -70,8 +72,8 @@ LOGS_DIR = SHARED_GOALS_DIR / "logs"
 SESSION_STATE_FILE = SHARED_GOALS_DIR / "state" / "daily-compass-session.json"
 
 HERMES_PROFILE_SPECS = {
-    "orchestration": ("Daily Compass", (), HERMES_SIGNAL_TIMEOUT_SECONDS),
-    "shared-goals-reflect": ("Daily Compass Reflect", ("memory",), HERMES_REFLECT_TIMEOUT_SECONDS),
+    "orchestration": ("Daily Compass", (), HERMES_SIGNAL_TIMEOUT_SECONDS, True),
+    "shared-goals-reflect": ("Daily Compass Reflect", ("memory",), HERMES_REFLECT_TIMEOUT_SECONDS, False),
 }
 
 DEFAULT_DIMENSIONS = ["faith", "will", "feeling", "mind"]
@@ -583,7 +585,7 @@ def resolve_hermes_call_profiles(
     auxiliary_model = ""
     auxiliary_provider = ""
     profiles: dict[str, HermesCallProfile] = {}
-    for key, (session_name, toolsets, timeout_seconds) in HERMES_PROFILE_SPECS.items():
+    for key, (session_name, toolsets, timeout_seconds, skip_memory) in HERMES_PROFILE_SPECS.items():
         record = sessions.get(key, {}) if isinstance(sessions, dict) else {}
         model = str(record.get("model", "")).strip() if isinstance(record, dict) else ""
         provider = str(record.get("provider", "")).strip() if isinstance(record, dict) else ""
@@ -602,6 +604,7 @@ def resolve_hermes_call_profiles(
             provider=provider,
             toolsets=toolsets,
             timeout_seconds=timeout_seconds,
+            skip_memory=skip_memory,
         )
     return profiles
 
@@ -625,6 +628,7 @@ def run_hermes_raw(
         toolsets=(),
         timeout_seconds=HERMES_SIGNAL_TIMEOUT_SECONDS,
         oneshot=session.mode != "chat",
+        skip_memory=True,
     )
     result = run_hermes_call(
         cli_argv=(session.chat_argv or resolve_chat_cli_argv()) if session.mode == "chat" else session.hermes_argv,
@@ -761,7 +765,7 @@ def run_shared_goals_reflection(
     )
     logger.log(f"Hindsight reflect start: {goal_title} (hunger={hunger_days(selected_line)}d)")
     try:
-        response = run_hermes_hindsight_reflect(query, task, profile, logger)
+        response = run_hindsight_reflect(query, task, logger)
         try:
             payload = json.loads(response)
         except json.JSONDecodeError:
@@ -791,34 +795,43 @@ def run_shared_goals_reflection(
         )
 
 
-def run_hermes_hindsight_reflect(
-    query: str, task: AreaSignalTask, profile: HermesCallProfile, logger: TraceLogger
-) -> str:
-    """Ask Hermes to invoke hindsight_reflect in its dedicated call profile."""
-    cli_argv = resolve_chat_cli_argv()
-    if not cli_argv:
-        raise RuntimeError("Hermes command unavailable")
-    request = (
-        "Use the `hindsight_reflect` tool exactly once with the query below. "
-        "Do not answer from your own reasoning and do not call any other tool. "
-        "After the tool returns, output only its result text.\n\n"
-        f"{query}"
-    )
+def run_hindsight_reflect(query: str, task: AreaSignalTask, logger: TraceLogger) -> str:
+    """Call Hindsight directly so the reflect wrapper is not retained as a new turn."""
+    config_path = HOME / ".hermes" / "hindsight" / "config.json"
+    config: dict[str, Any] = {}
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        pass
 
-    result = run_hermes_call(
-        cli_argv=cli_argv,
-        prompt=request,
-        profile=profile,
-        registry_path=SESSION_STATE_FILE,
-        logger=logger,
-        label="hindsight_reflect",
+    api_url = str(config.get("api_url") or os.environ.get("HINDSIGHT_API_URL", "http://rock.lan:8889")).rstrip("/")
+    bank_id = str(config.get("bank_id") or "hermes").strip() or "hermes"
+    payload = json.dumps({"query": query, "budget": "low", "max_tokens": 256}).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    api_key = str(config.get("apiKey") or os.environ.get("HINDSIGHT_API_KEY", "")).strip()
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    request = Request(
+        f"{api_url}/v1/default/banks/{bank_id}/reflect",
+        data=payload,
+        headers=headers,
+        method="POST",
     )
-    if result.returncode != 0:
-        err = (result.stderr or result.stdout).strip()[:500]
-        if result.timed_out:
-            raise RuntimeError(f"Hermes reflect timed out after {result.elapsed_seconds:.0f}s")
-        raise RuntimeError(err or "Hermes reflect request failed")
-    return sanitize_hermes_output(result.stdout or "")
+    logger.log(f"Hindsight direct reflect start: bank={bank_id} query_chars={len(query)}")
+    try:
+        with urlopen(request, timeout=HERMES_REFLECT_TIMEOUT_SECONDS) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except (HTTPError, URLError, TimeoutError, OSError) as exc:
+        raise RuntimeError(f"Hindsight reflect request failed: {exc}") from exc
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Hindsight reflect returned invalid JSON") from exc
+
+    text = str(result.get("text", "")).strip() if isinstance(result, dict) else ""
+    if not text:
+        raise RuntimeError("Hindsight reflect returned empty text")
+    logger.log(f"Hindsight direct reflect done: {len(text)} chars")
+    return text
 
 
 def build_area_signal_tasks(runtime: CompassContext) -> list[AreaSignalTask]:

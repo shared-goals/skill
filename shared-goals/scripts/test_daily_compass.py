@@ -52,6 +52,7 @@ class DailyCompassPureTests(unittest.TestCase):
                 provider=provider,
                 toolsets=(),
                 timeout_seconds=shared.HERMES_SIGNAL_TIMEOUT_SECONDS,
+                skip_memory=True,
             ),
             "shared-goals-reflect": shared.HermesCallProfile(
                 key="shared-goals-reflect",
@@ -60,6 +61,7 @@ class DailyCompassPureTests(unittest.TestCase):
                 provider=provider,
                 toolsets=("memory",),
                 timeout_seconds=shared.HERMES_REFLECT_TIMEOUT_SECONDS,
+                skip_memory=False,
             ),
         }
 
@@ -85,9 +87,9 @@ class DailyCompassPureTests(unittest.TestCase):
         calls: list[tuple[str, dict[str, str]]] = []
         prompt = "Work on the selected goal with the next concrete action first. #sg-photo"
 
-        def fake_reflect(query: str, _task: object, _profile: object, _logger: object) -> str:
+        def fake_reflect(query: str, _task: object, _logger: object) -> str:
             calls.append(("hindsight_reflect", {"query": query}))
-            return json.dumps({"result": prompt})
+            return prompt
 
         task = module.AreaSignalTask(
             index=0,
@@ -113,7 +115,7 @@ class DailyCompassPureTests(unittest.TestCase):
         try:
             with mock.patch.object(
                 module,
-                "run_hermes_hindsight_reflect",
+                "run_hindsight_reflect",
                 side_effect=fake_reflect,
             ):
                 result = module.run_shared_goals_reflection(task, logger, self.make_profiles()["shared-goals-reflect"])
@@ -132,8 +134,8 @@ class DailyCompassPureTests(unittest.TestCase):
     def test_shared_goals_reflection_sanitizes_multiline_signal(self) -> None:
         raw = "**Prompt**\n\n> Quoted line one\n> Quoted line two\n\nMore prose after a blank line"
 
-        def fake_reflect(query: str, _task: object, _profile: object, _logger: object) -> str:
-            return json.dumps({"result": raw})
+        def fake_reflect(query: str, _task: object, _logger: object) -> str:
+            return raw
 
         task = module.AreaSignalTask(
             index=0,
@@ -154,7 +156,7 @@ class DailyCompassPureTests(unittest.TestCase):
         )
         logger = module.TraceLogger(verbose=False)
         try:
-            with mock.patch.object(module, "run_hermes_hindsight_reflect", side_effect=fake_reflect):
+            with mock.patch.object(module, "run_hindsight_reflect", side_effect=fake_reflect):
                 result = module.run_shared_goals_reflection(task, logger, self.make_profiles()["shared-goals-reflect"])
         finally:
             if hasattr(logger, "_fh") and not logger._fh.closed:
@@ -167,7 +169,7 @@ class DailyCompassPureTests(unittest.TestCase):
         self.assertEqual(stored, "Prompt > Quoted line one > Quoted line two More prose after a blank line")
 
     def test_shared_goals_reflection_keeps_hungriest_goal_when_reflection_fails(self) -> None:
-        def fake_reflect(query: str, _task: object, _profile: object, _logger: object) -> str:
+        def fake_reflect(query: str, _task: object, _logger: object) -> str:
             raise RuntimeError("empty reflection")
 
         task = module.AreaSignalTask(
@@ -192,7 +194,7 @@ class DailyCompassPureTests(unittest.TestCase):
         )
         logger = module.TraceLogger(verbose=False)
         try:
-            with mock.patch.object(module, "run_hermes_hindsight_reflect", side_effect=fake_reflect):
+            with mock.patch.object(module, "run_hindsight_reflect", side_effect=fake_reflect):
                 result = module.run_shared_goals_reflection(
                     task, logger, self.make_profiles()["shared-goals-reflect"]
                 )
@@ -204,6 +206,41 @@ class DailyCompassPureTests(unittest.TestCase):
         self.assertEqual(result.reason, "hindsight_reflect_failed")
         self.assertEqual(len(result.area["lines"]), 1)
         self.assertEqual(result.area["lines"][0]["title"], "Hungry #sg-photo hunger:14d")
+
+    def test_direct_hindsight_reflect_posts_query_and_reads_text(self) -> None:
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                return False
+
+            def read(self) -> bytes:
+                return b'{"text":"direct answer"}'
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            home = Path(tmp_dir)
+            config_dir = home / ".hermes" / "hindsight"
+            config_dir.mkdir(parents=True)
+            (config_dir / "config.json").write_text(
+                json.dumps({"api_url": "http://hindsight.test", "bank_id": "hermes-test"}),
+                encoding="utf-8",
+            )
+            logger = module.TraceLogger(verbose=False)
+            try:
+                with (
+                    mock.patch.object(module, "HOME", home),
+                    mock.patch.object(module, "urlopen", return_value=FakeResponse()) as open_mock,
+                ):
+                    result = module.run_hindsight_reflect("query", mock.sentinel.task, logger)
+            finally:
+                if hasattr(logger, "_fh") and not logger._fh.closed:
+                    logger._fh.close()
+
+        request = open_mock.call_args.args[0]
+        self.assertEqual(result, "direct answer")
+        self.assertEqual(request.full_url, "http://hindsight.test/v1/default/banks/hermes-test/reflect")
+        self.assertEqual(json.loads(request.data), {"query": "query", "budget": "low", "max_tokens": 256})
 
     def test_json_area_signal_contract_uses_area_limit(self) -> None:
         contract = module.json_area_signal_contract({"signal_max_chars": 2000})
@@ -1088,6 +1125,46 @@ Ignore.
             self.assertIn("toolsets=memory", log_text)
             self.assertIn(f"timeout={shared.HERMES_REFLECT_TIMEOUT_SECONDS}s", log_text)
 
+    def test_run_hermes_call_disables_external_memory_for_orchestration(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state_path = Path(tmp_dir) / "state" / "daily-compass-session.json"
+            profile = shared.HermesCallProfile(
+                key="orchestration",
+                session_name="Daily Compass",
+                model="test-model",
+                provider="test-provider",
+                toolsets=(),
+                timeout_seconds=shared.HERMES_SIGNAL_TIMEOUT_SECONDS,
+                skip_memory=True,
+            )
+            calls: list[list[str]] = []
+
+            def fake_run(argv, *, timeout, env=None):
+                calls.append(argv)
+                return shared.SubprocessTextResult(returncode=0, stdout="ok", stderr="")
+
+            logger = module.TraceLogger(verbose=False)
+            try:
+                with mock.patch.object(shared, "run_subprocess_text", side_effect=fake_run):
+                    shared.run_hermes_call(
+                        cli_argv=["hermes", "chat"],
+                        prompt="prompt",
+                        profile=profile,
+                        registry_path=state_path,
+                        logger=logger,
+                        label="orchestration",
+                    )
+            finally:
+                if hasattr(logger, "_fh") and not logger._fh.closed:
+                    logger._fh.close()
+
+            self.assertEqual(len(calls), 1)
+            self.assertIn("--ignore-rules", calls[0])
+
+    def test_reflect_profile_keeps_external_memory_enabled(self) -> None:
+        profiles = self.make_profiles()
+        self.assertFalse(profiles["shared-goals-reflect"].skip_memory)
+
     def test_run_hermes_call_records_id_of_session_created_by_title(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             state_path = Path(tmp_dir) / "state" / "daily-compass-session.json"
@@ -1263,6 +1340,7 @@ Ignore.
             self.assertIn("--continue", calls[0])
             self.assertIn("Daily Compass", calls[0])
             self.assertIn("--create-if-missing", calls[0])
+            self.assertIn("--ignore-rules", calls[0])
 
 
 if __name__ == "__main__":

@@ -425,6 +425,7 @@ class HermesCallProfile:
     toolsets: tuple[str, ...]
     timeout_seconds: int
     oneshot: bool = False
+    skip_memory: bool = False
 
 
 @dataclass
@@ -553,6 +554,8 @@ def run_hermes_call(
         cmd.extend(["--model", profile.model, "--provider", profile.provider])
         if profile.toolsets:
             cmd.extend(["--toolsets", ",".join(profile.toolsets)])
+        if profile.skip_memory:
+            cmd.append("--ignore-rules")
         if profile.oneshot:
             cmd.extend(["--oneshot", prompt])
         else:

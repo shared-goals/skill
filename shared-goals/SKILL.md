@@ -54,7 +54,7 @@ Every Commit carries a `dimension_tag`:
 | `mind` | Analysis, knowledge, cognitive work |
 
 **Hunger-first:** show dimensions in order from least-fed to most-fed.
-Order is personal — configured in `references/`. Platform will calculate automatically post-MVP.
+Daily Compass takes the order from the platform's `dimension_order` (never-fed first); the list below is only the fallback when the platform is unavailable, and the output is then flagged.
 
 ## Dimensions order
 

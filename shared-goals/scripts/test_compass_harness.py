@@ -137,15 +137,24 @@ def test_platform_lines_follow_platform_dimension_order() -> None:
     assert tags == ["#sg-music", "#sg-photo", "#sg-run", "#sg-read"]
 
 
-@pytest.mark.xfail(strict=True, reason="task 4: dimensions come from SKILL.md, not platform dimension_order")
 def test_rendered_dimension_order_follows_platform(logger, monkeypatch) -> None:
     payload = _fixture("platform_shared_goals.json")
     monkeypatch.setattr(platform, "fetch_platform_shared_goals", lambda: payload)
     runtime = compass.build_runtime([], {}, logger)
     assert runtime["dimensions"] == payload["dimension_order"]
+    assert runtime["ranking_fallback"] is False
 
 
-@pytest.mark.xfail(strict=True, reason="task 4: 'hunger:neverd' parses as -1 and ranks never-fed goals last")
+def test_platform_outage_falls_back_to_skill_order_and_is_flagged(logger, monkeypatch) -> None:
+    monkeypatch.setattr(platform, "fetch_platform_shared_goals", lambda: None)
+    monkeypatch.setattr(compass, "datetime", FrozenDatetime)
+    runtime = compass.build_runtime([], {}, logger)
+    assert runtime["dimensions"] == ["faith", "will", "feeling", "mind"]
+    assert runtime["ranking_fallback"] is True
+    rendered = compass.render_template(compass.build_render_context(runtime))
+    assert "platform unavailable" in rendered
+
+
 def test_never_fed_goal_is_selected_first(logger, monkeypatch) -> None:
     lines = platform.build_platform_lines(_fixture("platform_shared_goals.json"))
     assert "#sg-music" in _selected_goal_title(lines, logger, monkeypatch)

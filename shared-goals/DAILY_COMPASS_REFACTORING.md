@@ -122,6 +122,7 @@ End-to-end
 3. **Collect.** `compass/collect.py`: run boundary scripts (keep `ThreadPoolExecutor`, timeouts, env vars) and platform fetch. Green: T-FAIL-1, T-RANK-4.
    - Done: `collect_areas()` → frozen `Evidence` validated by `BoundaryPayload`; legacy `run_boundary_script`/`validate_boundary_payload` deleted. `fetch_platform_shared_goals()` returns `None` on outage → boundary `error/platform_unavailable`, and `compass-update` / `--update-compass` no longer overwrite Compass.md with an empty Shared Goals section. Fallback dimension order is part of task 4.
 4. **Rank.** `compass/rank.py` from platform `dimension_order`; delete `hunger:Nd` title parsing. Green: T-RANK-*.
+   - Done: `dimension_order()` (platform order, SKILL.md fallback flagged in output) and `hungriest_line()` (first platform line; never-fed first). All T-RANK xfails resolved. Compass fetches the platform once itself; the Shared Goals boundary script still fetches separately.
 5. **Memory.** `compass/memory.py` with `hindsight-client` `reflect(response_schema, tags, include_facts)`; bank/url/key from `~/.hermes/hindsight/config.json`. Green: T-MEM-1, T-LLM-3, T-FAIL-2.
 6. **Advise.** `compass/advise.py` via `agent.auxiliary_client.call_llm` with JSON schema output and one validation retry; area prompts still read from each skill's `## Area signal`. Green: T-LLM-*, T-MEM-2, T-FAIL-3.
 7. **Render.** Port `templates/daily-output.md` to Jinja2; delete `tpl_*`. Green: T-REN-*.

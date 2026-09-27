@@ -103,8 +103,8 @@ class DailyCompassPureTests(unittest.TestCase):
                 "reason": "",
                 "signal": "",
                 "lines": [
-                    {"title": "Less hungry #sg-less hunger:6d", "body": "Later", "signal": ""},
                     {"title": "Hungry #sg-photo hunger:14d", "body": "Do photos", "signal": ""},
+                    {"title": "Less hungry #sg-less hunger:6d", "body": "Later", "signal": ""},
                 ],
             },
             area_prompt="",
@@ -184,8 +184,8 @@ class DailyCompassPureTests(unittest.TestCase):
                 "reason": "",
                 "signal": "",
                 "lines": [
-                    {"title": "Less hungry #sg-less hunger:6d", "body": "Later", "signal": ""},
                     {"title": "Hungry #sg-photo hunger:14d", "body": "Do photos", "signal": ""},
+                    {"title": "Less hungry #sg-less hunger:6d", "body": "Later", "signal": ""},
                 ],
             },
             area_prompt="",
@@ -460,7 +460,8 @@ class DailyCompassPureTests(unittest.TestCase):
     def test_build_runtime_skips_platform_feed_by_default(self) -> None:
         logger = module.TraceLogger(verbose=False)
         try:
-            runtime = module.build_runtime([], {}, logger)
+            with mock.patch.object(module.sg_platform, "fetch_platform_shared_goals", return_value=None):
+                runtime = module.build_runtime([], {}, logger)
         finally:
             if hasattr(logger, "_fh") and not logger._fh.closed:
                 logger._fh.close()

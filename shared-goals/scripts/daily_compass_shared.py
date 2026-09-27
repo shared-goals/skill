@@ -616,6 +616,7 @@ class CompassContext(TypedDict):
     signal_prompt: str
     signal: str
     dimensions: list[str]
+    ranking_fallback: bool
     areas: list[BoundaryAreaContext]
     area_meta: dict[str, dict[str, str]]
 

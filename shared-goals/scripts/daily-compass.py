@@ -25,9 +25,11 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+import shared_goals_platform as sg_platform
 from compass.collect import boundary_script, collect_areas
 from compass.config import build_skill_index, load_active_areas
 from compass.models import AreaConfig, Evidence
+from compass.rank import dimension_order, hungriest_line
 from daily_compass_shared import (
     AREA_SIGNAL_VERIFICATION_BASE_LINES,
     COMPASS_CONTEXT_STATE_FILE,
@@ -320,28 +322,12 @@ def normalize_block(text: str) -> str:
 
 
 def parse_dimensions_order() -> list[str]:
+    """Fallback order from SKILL.md `## Dimensions order`; validated by `dimension_order()`."""
     text = SHARED_GOALS_SKILL.read_text(encoding="utf-8", errors="replace")
-    block = extract_section(text, "Dimensions order")
-    if not block:
-        return list(DEFAULT_DIMENSIONS)
-    first = ""
-    for ln in block.splitlines():
+    for ln in extract_section(text, "Dimensions order").splitlines():
         if ln.strip() and not ln.strip().startswith("#"):
-            first = ln.strip()
-            break
-    if not first:
-        return list(DEFAULT_DIMENSIONS)
-    dims = [d.strip() for d in first.split(",") if d.strip()]
-    filtered: list[str] = []
-    for dim in dims:
-        if dim in VALID_DIMENSIONS and dim not in filtered:
-            filtered.append(dim)
-    if not filtered:
-        return list(DEFAULT_DIMENSIONS)
-    for dim in DEFAULT_DIMENSIONS:
-        if dim not in filtered:
-            filtered.append(dim)
-    return filtered
+            return [d.strip() for d in ln.split(",") if d.strip()]
+    return []
 
 
 def validate_runtime_or_raise(runtime: dict[str, Any]) -> None:
@@ -680,15 +666,10 @@ def run_shared_goals_reflection(
 ) -> SignalJobResult:
     """Reflect once on the hungriest Shared Goal and store the prompt in signal."""
     lines = task.area.get("lines", [])
-    if not isinstance(lines, list) or not lines:
+    selected_line = hungriest_line(lines) if isinstance(lines, list) else None
+    if selected_line is None:
         return SignalJobResult(key=task.key, area=None, reason="shared_goals_empty", ok=False)
 
-    def hunger_days(line: dict[str, Any]) -> int:
-        match = re.search(r"hunger:(\d+)d", str(line.get("title", "")))
-        return int(match.group(1)) if match else -1
-
-    candidates = [line for line in lines if isinstance(line, dict)]
-    _, selected_line = max(enumerate(candidates), key=lambda item: (hunger_days(item[1]), -item[0]))
     goal_title = str(selected_line.get("title", "")).strip()
     goal_body = str(selected_line.get("body", "")).strip()
     query = (
@@ -702,7 +683,7 @@ def run_shared_goals_reflection(
         f"Selected goal: {goal_title}\n"
         f"Authoritative next steps:\n{goal_body}"
     )
-    logger.log(f"Hindsight reflect start: {goal_title} (hunger={hunger_days(selected_line)}d)")
+    logger.log(f"Hindsight reflect start: {goal_title}")
     try:
         response = run_hindsight_reflect(query, task, logger)
         try:
@@ -881,12 +862,15 @@ def build_runtime(
     skill_index: dict[str, Path],
     logger: TraceLogger,
 ) -> CompassContext:
-    dimensions_order = parse_dimensions_order()
+    order, from_platform = dimension_order(sg_platform.fetch_platform_shared_goals(), parse_dimensions_order())
+    if not from_platform:
+        logger.log("Platform dimension_order unavailable; using SKILL.md fallback order")
     compass_prompt = resolve_compass_signal_prompt()
     runtime: CompassContext = {
         "signal_prompt": compass_prompt,
         "signal": "",
-        "dimensions": list(dimensions_order),
+        "dimensions": list(order),
+        "ranking_fallback": not from_platform,
         "areas": [],
         "area_meta": {},
     }
@@ -961,6 +945,7 @@ def build_render_context(runtime: CompassContext) -> dict[str, Any]:
         "weekday": now.strftime("%A"),
         "date": f"{now.strftime('%B')} {now.day}, {now.year}",
         "compass": {"signal": runtime.get("signal", "")},
+        "ranking_fallback": bool(runtime.get("ranking_fallback")),
         "dimensions": dimensions_out,
     }
 

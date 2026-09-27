@@ -1,5 +1,9 @@
 ☀️ *{weekday}, {date}*
 
+{if ranking_fallback}
+_⚠️ Shared Goals platform unavailable — default dimension order_
+{/if}
+
 {if compass.signal}
 *{compass.signal}*
 {/if}

@@ -24,6 +24,10 @@ from pathlib import Path
 from time import monotonic
 from typing import Any
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
 import shared_goals_platform as sg_platform
 from compass.collect import boundary_script, collect_areas
 from compass.config import build_skill_index, load_active_areas

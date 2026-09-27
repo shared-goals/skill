@@ -128,7 +128,7 @@ End-to-end
    - Open: T-MEM-3 live bank-delta check is blocked — on 2026-09-27 Hindsight `/reflect` returned 500 or hung >120 s for plain requests while `/health` was green. Re-run `/tmp`-style probe (stats + mental models + documents before/after one reflect) once reflect is healthy.
 6. **Advise.** `compass/advise.py` via `agent.auxiliary_client.call_llm` with JSON schema output and one validation retry; area prompts still read from each skill's `## Area signal`. Green: T-LLM-*, T-MEM-2, T-FAIL-3.
 7. **Render.** Port `templates/daily-output.md` to Jinja2; delete `tpl_*`. Green: T-REN-*.
-8. **Cut over.** Thin `daily-compass.py` CLI (`--dry-run`, `--verbose`, area filter); delete session registry, `run_hermes_*`, `daily-compass-session.json`, prose-stripping validators. Green: T-E2E-1, S8, S9.
+8. **Cut over.** Thin `daily-compass.py` CLI (`--dry-run`, `--verbose`, area filter); delete session registry, Hermes subprocess call layer, `daily-compass-session.json`, and custom template interpreter. Done in `778be81`; live T-E2E-1/S8/S9 validation remains before re-enable.
 9. **Live validation.** Run T-MEM-3 + T-E2E-2 manually 3 times across 2 days; compare output with the last legacy run; re-run the cleanup tag audit.
 10. **Re-enable cron** after S1–S10 pass; watch the first 3 scheduled runs (bank-stats delta, delivery, duration). Update `SKILL.md` and `sg-area-craft` for any contract change.
 

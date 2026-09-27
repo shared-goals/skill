@@ -932,6 +932,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("areas", nargs="*", help="Optional area keys, e.g. weather news")
     p.add_argument("--verbose", action="store_true", help="Print trace to stdout")
     p.add_argument("--fast", action="store_true", help="Skip signal phase")
+    p.add_argument("--dry-run", action="store_true", help="Collect and render without signal calls")
     return p.parse_args()
 
 
@@ -978,14 +979,14 @@ def main() -> int:
             script_chunks.append(json.dumps(area, ensure_ascii=False, indent=2) + "\n\n")
         log_block("".join(script_chunks))
 
-        if args.fast:
+        if args.fast or args.dry_run:
             log_phase(PHASE_PROMPTS)
             if args.verbose:
                 print_prompt_preview(runtime)
             else:
                 logger.write_chunk("Generated signal prompts\n\n")
                 emit_generated_prompts(runtime, log_line)
-            logger.log("fast mode: signal requests skipped")
+            logger.log("dry-run mode: signal requests skipped" if args.dry_run else "fast mode: signal requests skipped")
         else:
             log_phase(PHASE_PROMPTS)
             if args.verbose:
@@ -995,7 +996,7 @@ def main() -> int:
                 emit_generated_prompts(runtime, log_line)
 
         log_phase(PHASE_SIGNAL)
-        if args.fast:
+        if args.fast or args.dry_run:
             log_block("Skipped in fast mode: Phase 3 runs hermes requests and JSON processing only in compass-run.\n")
         else:
             logger.log("phase 3 signal requests start")

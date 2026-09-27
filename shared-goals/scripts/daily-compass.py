@@ -21,6 +21,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
+from time import monotonic
 from typing import Any
 
 import shared_goals_platform as sg_platform
@@ -49,7 +50,6 @@ from daily_compass_shared import (
     project_boundary_to_area_context,
     resolve_chat_cli_argv,
     resolve_hermes_argv,
-    run_hermes_call,
     run_subprocess_text,
     safe_str_key,
     sanitize_hermes_output,
@@ -61,6 +61,10 @@ from daily_compass_shared import (
 )
 
 HOME = Path.home()
+HERMES_AGENT_DIR = HOME / ".hermes" / "hermes-agent"
+if str(HERMES_AGENT_DIR) not in sys.path:
+    sys.path.insert(0, str(HERMES_AGENT_DIR))
+
 HERMES_SKILLS_DIR = HOME / ".hermes" / "skills"
 SHARED_GOALS_DIR = HERMES_SKILLS_DIR / "shared-goals" / "shared-goals"
 SHARED_GOALS_SKILL = SHARED_GOALS_DIR / "SKILL.md"
@@ -545,40 +549,31 @@ def run_hermes_raw(
     label: str,
     session: HermesSessionState,
 ) -> tuple[str, float]:
-    if not session.hermes_argv:
-        logger.log("Hermes command unavailable: neither PATH shim nor module fallback found")
-        return "[ERR:hermes_unavailable]", 0.0
-    profile = HermesCallProfile(
-        key="orchestration",
-        session_name=session.session_name,
-        model=model,
-        provider=provider,
-        toolsets=(),
-        timeout_seconds=HERMES_SIGNAL_TIMEOUT_SECONDS,
-        oneshot=session.mode != "chat",
-        skip_memory=True,
+    del session
+    logger.log(
+        f"Stateless auxiliary call start: label={label} model={model} provider={provider} "
+        f"timeout={HERMES_SIGNAL_TIMEOUT_SECONDS}s"
     )
-    result = run_hermes_call(
-        cli_argv=(session.chat_argv or resolve_chat_cli_argv()) if session.mode == "chat" else session.hermes_argv,
-        prompt=prompt,
-        profile=profile,
-        registry_path=session.session_state_file,
-        logger=logger,
-        label=label,
-    )
-    if result.timed_out:
-        return "[ERR:hermes_timeout]", 0.0
-    if result.launch_error:
-        return "[ERR:hermes_unavailable]", 0.0
-    if result.returncode != 0:
-        return f"[ERR:hermes_exit_{result.returncode}]", 0.0
+    started = monotonic()
+    try:
+        from agent.auxiliary_client import call_llm, extract_content_or_reasoning
 
-    if session.mode == "chat":
-        session.session_id = result.session_id
-    stdout_text = result.stdout
-
-    text = sanitize_hermes_output(stdout_text or "")
-    return text or "[ERR:hermes_empty]", result.elapsed_seconds
+        response = call_llm(
+            task="daily_compass",
+            model=model or None,
+            provider=provider or None,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=1024,
+            timeout=HERMES_SIGNAL_TIMEOUT_SECONDS,
+        )
+        text = sanitize_hermes_output(extract_content_or_reasoning(response) or "")
+    except Exception as exc:
+        elapsed = monotonic() - started
+        logger.log(f"Stateless auxiliary call failed: label={label} elapsed={elapsed:.1f}s error={exc!r}")
+        return "[ERR:hermes_unavailable]", elapsed
+    elapsed = monotonic() - started
+    logger.log(f"Stateless auxiliary call finish: label={label} elapsed={elapsed:.1f}s")
+    return text or "[ERR:hermes_empty]", elapsed
 
 
 def run_hermes(

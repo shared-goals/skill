@@ -1236,46 +1236,30 @@ Ignore.
             self.assertNotIn("rename", calls[0])
             self.assertNotIn("sessions", calls[0])
 
-    def test_run_hermes_raw_chat_mode_continues_named_session(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            state_path = Path(tmp_dir) / "state" / "daily-compass-session.json"
-            profile = shared.HermesCallProfile(
-                key="orchestration",
-                session_name="Daily Compass",
-                model="",
-                provider="",
-                toolsets=(),
-                timeout_seconds=shared.HERMES_SIGNAL_TIMEOUT_SECONDS,
-            )
-            shared.save_named_session(state_path, profile, "20260820_190110_1f2393")
-            calls: list[list[str]] = []
+    def test_run_hermes_raw_uses_stateless_auxiliary_call(self) -> None:
+        logger = module.TraceLogger(verbose=False)
+        session = module.HermesSessionState(mode="chat", hermes_argv=[], chat_argv=[])
+        calls: list[dict[str, object]] = []
 
-            def fake_run(argv, *, timeout, env=None):
-                calls.append(argv)
-                return shared.SubprocessTextResult(returncode=0, stdout='{"area": {}}', stderr="")
+        def fake_call_llm(**kwargs: object) -> str:
+            calls.append(kwargs)
+            return "direct auxiliary response"
 
-            session = module.HermesSessionState(
-                mode="chat",
-                hermes_argv=["hermes"],
-                chat_argv=["hermes", "chat"],
-                session_name="Daily Compass",
-                session_state_file=state_path,
-            )
-            logger = module.TraceLogger(verbose=False)
-            try:
-                with mock.patch.object(shared, "run_subprocess_text", side_effect=fake_run):
-                    text, _elapsed = module.run_hermes_raw("prompt", "", "", logger, "area:news", session)
-            finally:
-                if hasattr(logger, "_fh") and not logger._fh.closed:
-                    logger._fh.close()
+        try:
+            with mock.patch("agent.auxiliary_client.call_llm", side_effect=fake_call_llm):
+                text, elapsed = module.run_hermes_raw(
+                    "prompt", "test-model", "test-provider", logger, "area:news", session
+                )
+        finally:
+            if hasattr(logger, "_fh") and not logger._fh.closed:
+                logger._fh.close()
 
-            self.assertEqual(text, '{"area": {}}')
-            self.assertEqual(len(calls), 1)
-            self.assertNotIn("--resume", calls[0])
-            self.assertIn("--continue", calls[0])
-            self.assertIn("Daily Compass", calls[0])
-            self.assertIn("--create-if-missing", calls[0])
-            self.assertIn("--ignore-rules", calls[0])
+        self.assertEqual(text, "direct auxiliary response")
+        self.assertGreaterEqual(elapsed, 0)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["model"], "test-model")
+        self.assertEqual(calls[0]["provider"], "test-provider")
+        self.assertEqual(calls[0]["messages"], [{"role": "user", "content": "prompt"}])
 
 
 if __name__ == "__main__":

@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -29,6 +28,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 import shared_goals_platform as sg_platform
+import yaml
 from compass.collect import boundary_script, collect_areas
 from compass.config import build_skill_index, load_active_areas
 from compass.memory import Reflection, TagsMatch, open_memory_reader
@@ -39,7 +39,6 @@ from daily_compass_shared import (
     COMPASS_CONTEXT_STATE_FILE,
     HERMES_REFLECT_TIMEOUT_SECONDS,
     HERMES_SIGNAL_TIMEOUT_SECONDS,
-    SESSION_COMMAND_TIMEOUT_SECONDS,
     AreaContext,
     BoundaryAreaContext,
     CompassContext,
@@ -51,7 +50,6 @@ from daily_compass_shared import (
     parse_json_object,
     project_boundary_to_area_context,
     resolve_hermes_argv,
-    run_subprocess_text,
     safe_str_key,
     sanitize_hermes_output,
     sanitize_logos_task_text,
@@ -493,15 +491,16 @@ def resolve_compass_signal_prompt() -> str:
 def read_hermes_config_value(
     hermes_argv: list[str], key: str, logger: TraceLogger, *, allow_empty: bool = False
 ) -> str:
-    result = run_subprocess_text(
-        [*hermes_argv, "config", "get", key],
-        timeout=SESSION_COMMAND_TIMEOUT_SECONDS,
-        env=os.environ.copy(),
-    )
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip()
-        raise RuntimeError(f"Unable to read Hermes config '{key}': {detail or result.returncode}")
-    value = result.stdout.strip()
+    del hermes_argv
+    config_path = HOME / ".hermes" / "config.yaml"
+    try:
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        raise RuntimeError(f"Unable to read Hermes config '{key}': {exc}") from exc
+    value: Any = config
+    for part in key.split("."):
+        value = value.get(part) if isinstance(value, dict) else None
+    value = str(value or "").strip()
     if not value and not allow_empty:
         raise RuntimeError(f"Hermes config '{key}' is empty")
     logger.log(f"Resolved Hermes config: {key}={value}")

@@ -791,15 +791,6 @@ class DailyCompassPureTests(unittest.TestCase):
         self.assertIn("Will Goal", lines[0]["title"])
         self.assertIn("Faith Goal", lines[1]["title"])
 
-    def test_choose_primary_dimension(self) -> None:
-        self.assertEqual(module.choose_primary_dimension(["mind", "faith"]), "mind")
-        self.assertEqual(module.choose_primary_dimension(["unknown", "will"]), "will")
-
-    def test_inline_list_parser(self) -> None:
-        self.assertEqual(module.parse_inline_list("[faith, will]"), ["faith", "will"])
-        self.assertEqual(module.parse_inline_list("[]"), [])
-        self.assertEqual(module.parse_inline_list("not-list"), [])
-
     def test_template_tokenize_minimal(self) -> None:
         toks = module.tpl_tokenize("Hello {name}")
         self.assertTrue(any(t[0] == "VAR" for t in toks))

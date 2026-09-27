@@ -24,7 +24,8 @@ markers = ["live: touches real services or area scripts; run with -m live"]
 
 [tool.ruff]
 line-length = 120
-target-version = "py311"
+# Area scripts and daily_compass_shared.py may run under macOS system python3 (3.9).
+target-version = "py39"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]

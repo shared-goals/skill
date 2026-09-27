@@ -642,68 +642,6 @@ def parse_json_object(text: str) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
-def parse_top_level_yaml(path: Path) -> dict[str, str]:
-    data: dict[str, str] = {}
-    for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or line.startswith("-"):
-            continue
-        m = re.match(r"^([A-Za-z0-9_-]+):\s*(.*)$", line)
-        if not m:
-            continue
-        key = m.group(1)
-        value = m.group(2).strip()
-        if value.startswith(("'", '"')) and value.endswith(("'", '"')) and len(value) >= 2:
-            value = value[1:-1]
-        data[key] = value
-    return data
-
-
-def parse_inline_list(value: str) -> list[str]:
-    v = value.strip()
-    if not (v.startswith("[") and v.endswith("]")):
-        return []
-    inner = v[1:-1].strip()
-    if not inner:
-        return []
-    out: list[str] = []
-    for item in inner.split(","):
-        d = item.strip().strip('"').strip("'")
-        if d:
-            out.append(d)
-    return out
-
-
-def parse_frontmatter_name(skill_md: Path) -> str | None:
-    text = skill_md.read_text(encoding="utf-8", errors="replace")
-    if not text.startswith("---\n"):
-        return None
-    end = text.find("\n---", 4)
-    if end < 0:
-        return None
-    for raw in text[4:end].splitlines():
-        m = re.match(r"^name:\s*(.+)$", raw.strip())
-        if m:
-            return m.group(1).strip().strip('"').strip("'")
-    return None
-
-
-def find_skill_dir(skill_name: str, skills_root: Path) -> Path | None:
-    for md in skills_root.glob("**/SKILL.md"):
-        if parse_frontmatter_name(md) == skill_name:
-            return md.parent
-    return None
-
-
-def build_skill_index(skills_root: Path) -> dict[str, Path]:
-    index: dict[str, Path] = {}
-    for skill_md in skills_root.glob("**/SKILL.md"):
-        name = parse_frontmatter_name(skill_md)
-        if name and name not in index:
-            index[name] = skill_md.parent
-    return index
-
-
 def extract_section(skill_text: str, heading: str) -> str:
     pat = re.compile(rf"^##\s+{re.escape(heading)}\s*$", re.M)
     m = pat.search(skill_text)

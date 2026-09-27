@@ -26,6 +26,8 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from compass.config import build_skill_index, load_active_areas
+from compass.models import AreaConfig
 from daily_compass_shared import (
     AREA_SIGNAL_VERIFICATION_BASE_LINES,
     BOUNDARY_SCRIPT_TIMEOUT_SECONDS,
@@ -39,14 +41,11 @@ from daily_compass_shared import (
     HermesCallProfile,
     area_context_definition_text,
     build_numbered_lines,
-    build_skill_index,
     extract_section,
     load_named_session_id,
     load_session_registry,
     normalize_text,
-    parse_inline_list,
     parse_json_object,
-    parse_top_level_yaml,
     project_boundary_to_area_context,
     resolve_chat_cli_argv,
     resolve_hermes_argv,
@@ -116,17 +115,6 @@ class AreaSignalExecutionContext:
     provider: str
     logger: TraceLogger
     session: HermesSessionState
-
-
-@dataclass
-class AreaConfig:
-    key: str
-    name: str
-    dimensions: list[str]
-    skill: str
-    status: str
-    path: Path
-    signal_max_chars: int
 
 
 @dataclass
@@ -358,52 +346,6 @@ def parse_dimensions_order() -> list[str]:
     return filtered
 
 
-def load_areas(selected: list[str], logger: TraceLogger) -> list[AreaConfig]:
-    selected_set = {x.strip().lower() for x in selected if x.strip()}
-    areas: list[AreaConfig] = []
-    for path in sorted(AREAS_DIR.glob("*.yaml")):
-        key = path.stem
-        if selected_set and key.lower() not in selected_set:
-            continue
-        cfg = parse_top_level_yaml(path)
-        status = cfg.get("status", "").strip()
-        if status != "active":
-            continue
-        name = cfg.get("name", key).strip() or key
-        dims = [d for d in parse_inline_list(cfg.get("dimensions", "[]")) if d in VALID_DIMENSIONS]
-        if not dims:
-            logger.log(f"Skip area '{key}': no valid dimensions")
-            continue
-        skill = cfg.get("skill", "").strip()
-        if not skill:
-            logger.log(f"Skip area '{key}': missing skill")
-            continue
-        try:
-            signal_max_chars = max(50, int(cfg.get("signal_max_chars", "50")))
-        except ValueError:
-            signal_max_chars = 50
-        areas.append(
-            AreaConfig(
-                key=key,
-                name=name,
-                dimensions=dims,
-                skill=skill,
-                status=status,
-                path=path,
-                signal_max_chars=signal_max_chars,
-            )
-        )
-    logger.log(f"Loaded {len(areas)} active areas")
-    return areas
-
-
-def choose_primary_dimension(area_dimensions: list[str]) -> str:
-    for dim in area_dimensions:
-        if dim in VALID_DIMENSIONS:
-            return dim
-    return DEFAULT_DIMENSIONS[0]
-
-
 def validate_runtime_or_raise(runtime: dict[str, Any]) -> None:
     if not isinstance(runtime, dict):
         raise ValueError("runtime_not_dict")
@@ -438,7 +380,7 @@ def build_error_area(area: AreaConfig, reason: str) -> BoundaryAreaContext:
     return {
         "name": area.name,
         "key": area.key,
-        "dimension": choose_primary_dimension(area.dimensions),
+        "dimension": area.dimension,
         "status": "error",
         "reason": reason,
         "signal": "",
@@ -1008,7 +950,7 @@ def build_runtime(
                 # Boundary scripts return minimal payload; metadata comes from YAML area config.
                 boundary_area["name"] = area.name
                 boundary_area["key"] = area.key
-                boundary_area["dimension"] = choose_primary_dimension(area.dimensions)
+                boundary_area["dimension"] = area.dimension
                 runtime["areas"].append(boundary_area)
 
     runtime["areas"].sort(key=lambda a: a["name"].lower())
@@ -1257,7 +1199,7 @@ def main() -> int:
     try:
         log_phase(PHASE_BOUNDARY)
         skill_index = build_skill_index(HERMES_SKILLS_DIR)
-        areas = load_areas(args.areas, logger)
+        areas = load_active_areas(AREAS_DIR, args.areas, logger.log)
         runtime = build_runtime(areas, skill_index, logger)
         validate_runtime_or_raise(runtime)
 

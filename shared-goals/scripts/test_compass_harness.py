@@ -19,6 +19,7 @@ from urllib.error import URLError
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 SCRIPTS_DIR = Path(__file__).parent
 FIXTURES = SCRIPTS_DIR / "fixtures"
@@ -27,6 +28,8 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 import daily_compass_shared as shared
 import shared_goals_platform as platform
+from compass.config import build_skill_index
+from compass.models import BoundaryPayload
 
 
 def _load(name: str, filename: str):
@@ -94,17 +97,20 @@ def _selected_goal_title(lines: list[dict], logger, monkeypatch) -> str:
 @pytest.mark.parametrize("name", sorted(_fixture("boundary_payloads.json")["valid"]))
 def test_boundary_payload_contract_accepts_valid(name: str) -> None:
     payload = _fixture("boundary_payloads.json")["valid"][name]
+    BoundaryPayload.model_validate(payload)
     assert shared.validate_boundary_payload(payload) == (True, "valid")
 
 
 @pytest.mark.parametrize("reason", sorted(_fixture("boundary_payloads.json")["invalid"]))
 def test_boundary_payload_contract_rejects_invalid(reason: str) -> None:
     payload = _fixture("boundary_payloads.json")["invalid"][reason]
+    with pytest.raises(ValidationError):
+        BoundaryPayload.model_validate(payload)
     assert shared.validate_boundary_payload(payload) == (False, reason)
 
 
 def _active_area_scripts() -> list[tuple[str, Path]]:
-    skill_index = shared.build_skill_index(compass.HERMES_SKILLS_DIR)
+    skill_index = build_skill_index(compass.HERMES_SKILLS_DIR)
     out: list[tuple[str, Path]] = []
     for path in sorted(compass.AREAS_DIR.glob("*.yaml")):
         cfg = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
@@ -123,7 +129,7 @@ def test_live_boundary_script_output_matches_contract(key: str, script: Path) ->
     assert script.exists(), f"{key}: missing {script}"
     result = shared.run_boundary_script(key, script)
     assert result.ok, f"{key}: {result.stderr}"
-    assert shared.validate_boundary_payload(result.payload)[0]
+    BoundaryPayload.model_validate(result.payload)
 
 
 # T-RANK ----------------------------------------------------------------------

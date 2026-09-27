@@ -16,6 +16,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+import yaml
+
 HOME = Path.home()
 HERMES_SKILLS_DIR = HOME / ".hermes" / "skills"
 SHARED_GOALS_DIR = HERMES_SKILLS_DIR / "shared-goals" / "shared-goals"
@@ -25,18 +27,16 @@ AREA_REFS_DIR = SHARED_GOALS_DIR / "references"
 if str(SHARED_GOALS_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SHARED_GOALS_SCRIPTS_DIR))
 
+from compass.config import build_skill_index
+from compass.models import DIMENSIONS
 from daily_compass_shared import (
     ACTION_VERBS,
     BOUNDARY_SCRIPT_TIMEOUT_SECONDS,
     COMMON_JSON_CONTRACT_PHRASES,
-    VALID_DIMENSIONS,
     extract_section,
-    find_skill_dir,
     is_valid_area_context,
     is_valid_boundary_area_context,
     is_valid_line_context,
-    parse_inline_list,
-    parse_top_level_yaml,
     run_boundary_script,
 )
 
@@ -193,19 +193,20 @@ def collect_skill_checks(
     if not exists:
         return None, "", [], ""
 
-    cfg = parse_top_level_yaml(area_file)
-    name_val = cfg.get("name", "").strip()
-    dims = parse_inline_list(cfg.get("dimensions", "[]"))
-    skill_name = cfg.get("skill", "").strip()
-    status = cfg.get("status", "").strip()
+    cfg = yaml.safe_load(area_file.read_text(encoding="utf-8")) or {}
+    name_val = str(cfg.get("name") or "").strip()
+    raw_dims = cfg.get("dimensions")
+    dims = [str(d) for d in raw_dims] if isinstance(raw_dims, list) else []
+    skill_name = str(cfg.get("skill") or "").strip()
+    status = str(cfg.get("status") or "").strip()
 
     add_check(checks, "yaml_name", bool(name_val), name_val or "missing", "skill")
     add_check(checks, "yaml_dimensions", bool(dims), str(dims), "skill")
-    add_check(checks, "yaml_dimensions_valid", all(d in VALID_DIMENSIONS for d in dims), str(dims), "skill")
+    add_check(checks, "yaml_dimensions_valid", all(d in DIMENSIONS for d in dims), str(dims), "skill")
     add_check(checks, "yaml_status", status in {"active", "TBD"}, status or "missing", "skill")
     add_check(checks, "yaml_skill", bool(skill_name), skill_name or "missing", "skill")
 
-    skill_dir = find_skill_dir(skill_name, HERMES_SKILLS_DIR) if skill_name else None
+    skill_dir = build_skill_index(HERMES_SKILLS_DIR).get(skill_name) if skill_name else None
     add_check(checks, "skill_found", skill_dir is not None, str(skill_dir) if skill_dir else "not found", "skill")
     return skill_dir, name_val, dims, skill_name
 

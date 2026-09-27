@@ -548,7 +548,6 @@ def run_hermes_raw(
         from agent.auxiliary_client import call_llm, extract_content_or_reasoning
 
         response = call_llm(
-            task="daily_compass",
             model=model or None,
             provider=provider or None,
             messages=[{"role": "user", "content": prompt}],
@@ -990,7 +989,9 @@ def main() -> int:
             else:
                 logger.write_chunk("Generated signal prompts\n\n")
                 emit_generated_prompts(runtime, log_line)
-            logger.log("dry-run mode: signal requests skipped" if args.dry_run else "fast mode: signal requests skipped")
+            logger.log(
+                "dry-run mode: signal requests skipped" if args.dry_run else "fast mode: signal requests skipped"
+            )
         else:
             log_phase(PHASE_PROMPTS)
             if args.verbose:

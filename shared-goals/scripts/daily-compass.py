@@ -43,7 +43,6 @@ from daily_compass_shared import (
     area_context_definition_text,
     build_numbered_lines,
     extract_section,
-    load_named_session_id,
     load_session_registry,
     normalize_text,
     parse_json_object,
@@ -511,9 +510,9 @@ def read_hermes_config_value(hermes_argv: list[str], key: str, logger: TraceLogg
 
 
 def resolve_hermes_call_profiles(
-    registry_path: Path, hermes_argv: list[str], logger: TraceLogger
+    registry_path: Path | None, hermes_argv: list[str], logger: TraceLogger
 ) -> dict[str, HermesCallProfile]:
-    registry = load_session_registry(registry_path, logger)
+    registry = load_session_registry(registry_path, logger) if registry_path is not None else {"sessions": {}}
     sessions = registry.get("sessions", {})
     auxiliary_model = ""
     auxiliary_provider = ""
@@ -948,22 +947,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("areas", nargs="*", help="Optional area keys, e.g. weather news")
     p.add_argument("--verbose", action="store_true", help="Print trace to stdout")
     p.add_argument("--fast", action="store_true", help="Skip signal phase")
-    p.add_argument(
-        "--session-title",
-        default=DEFAULT_SESSION_TITLE,
-        help="Stable Hermes session title used for Daily Compass runs",
-    )
-    p.add_argument(
-        "--session-state-file",
-        default=str(SESSION_STATE_FILE),
-        help="Path to JSON state file holding per-profile model overrides and last observed session ids",
-    )
-    p.add_argument(
-        "--session-mode",
-        choices=["chat", "oneshot"],
-        default="chat",
-        help="Hermes invocation mode: chat reuses one session during this run",
-    )
     return p.parse_args()
 
 
@@ -976,25 +959,10 @@ def main() -> int:
         sys.stdout = TeeStream(orig_stdout, logger)
         sys.stderr = TeeStream(orig_stderr, logger)
     logger.log("daily-compass start")
-    session = HermesSessionState(
-        mode=args.session_mode,
-        hermes_argv=resolve_hermes_argv(),
-        chat_argv=resolve_chat_argv(),
-        session_name=str(args.session_title or DEFAULT_SESSION_TITLE).strip() or DEFAULT_SESSION_TITLE,
-        session_state_file=Path(str(args.session_state_file)).expanduser(),
-    )
-    session.call_profiles = resolve_hermes_call_profiles(session.session_state_file, session.hermes_argv, logger)
-    if session.mode == "chat":
-        logger.log("Hermes session mode: chat (single session for this run)")
-        profile = session.call_profiles["orchestration"]
-        session.session_id = load_named_session_id(session.session_state_file, profile, logger)
-        logger.log(f"Hermes session title: '{profile.session_name}' (last known id: {session.session_id or 'none'})")
-    else:
-        logger.log("Hermes session mode: oneshot")
-    if not session.hermes_argv:
-        logger.log("Hermes binary resolution failed")
-    if session.mode == "chat" and not session.chat_argv and not session.hermes_argv:
-        logger.log("Hermes chat command resolution failed")
+    hermes_argv = resolve_hermes_argv()
+    session = HermesSessionState(mode="stateless", hermes_argv=hermes_argv, chat_argv=[])
+    session.call_profiles = resolve_hermes_call_profiles(None, hermes_argv, logger)
+    logger.log("Hermes session mode: stateless auxiliary calls")
 
     def log_phase(title: str) -> None:
         if args.verbose:

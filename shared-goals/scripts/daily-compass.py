@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -46,6 +47,7 @@ from daily_compass_shared import (
     area_context_definition_text,
     build_numbered_lines,
     extract_section,
+    load_env_file,
     normalize_text,
     parse_json_object,
     project_boundary_to_area_context,
@@ -547,16 +549,33 @@ def run_hermes_raw(
     )
     started = monotonic()
     try:
-        from agent.auxiliary_client import call_llm, extract_content_or_reasoning
+        if provider == "custom:thunder-forge":
+            from openai import OpenAI
 
-        response = call_llm(
-            model=model or None,
-            provider=provider or None,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=1024,
-            timeout=HERMES_SIGNAL_TIMEOUT_SECONDS,
-        )
-        text = sanitize_hermes_output(extract_content_or_reasoning(response) or "")
+            load_env_file()
+            client = OpenAI(
+                base_url="http://rock.lan:40116/v1",
+                api_key=os.environ.get("TF_USER_SHAG", ""),
+                max_retries=0,
+                timeout=HERMES_SIGNAL_TIMEOUT_SECONDS,
+            )
+            response = client.chat.completions.create(
+                model=model or "agent",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=1024,
+            )
+            text = sanitize_hermes_output(response.choices[0].message.content or "")
+        else:
+            from agent.auxiliary_client import call_llm, extract_content_or_reasoning
+
+            response = call_llm(
+                model=model or None,
+                provider=provider or None,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=1024,
+                timeout=HERMES_SIGNAL_TIMEOUT_SECONDS,
+            )
+            text = sanitize_hermes_output(extract_content_or_reasoning(response) or "")
     except Exception as exc:
         elapsed = monotonic() - started
         logger.log(f"Stateless auxiliary call failed: label={label} elapsed={elapsed:.1f}s error={exc!r}")
@@ -940,6 +959,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    load_env_file()
     logger = TraceLogger(verbose=args.verbose)
     orig_stdout = sys.stdout
     orig_stderr = sys.stderr

@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -32,6 +31,7 @@ import shared_goals_platform as sg_platform
 import yaml
 from compass.collect import boundary_script, collect_areas
 from compass.config import build_skill_index, load_active_areas
+from compass.llm import AREA_CONTEXT_SCHEMA, complete, open_client, resolve_endpoint
 from compass.memory import Reflection, TagsMatch, open_memory_reader
 from compass.models import AreaAdvice, AreaConfig, Evidence, SourceRef
 from compass.rank import dimension_order, hungriest_line
@@ -489,16 +489,19 @@ def resolve_compass_signal_prompt() -> str:
     return prompt or DEFAULT_COMPASS_PROMPT
 
 
+def load_hermes_config() -> dict[str, Any]:
+    config_path = HOME / ".hermes" / "config.yaml"
+    try:
+        return yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        raise RuntimeError(f"Unable to read Hermes config: {exc}") from exc
+
+
 def read_hermes_config_value(
     hermes_argv: list[str], key: str, logger: TraceLogger, *, allow_empty: bool = False
 ) -> str:
     del hermes_argv
-    config_path = HOME / ".hermes" / "config.yaml"
-    try:
-        config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-    except (OSError, yaml.YAMLError) as exc:
-        raise RuntimeError(f"Unable to read Hermes config '{key}': {exc}") from exc
-    value: Any = config
+    value: Any = load_hermes_config()
     for part in key.split("."):
         value = value.get(part) if isinstance(value, dict) else None
     value = str(value or "").strip()
@@ -541,30 +544,19 @@ def run_hermes_raw(
     logger: TraceLogger,
     label: str,
     session: HermesSessionState,
+    schema: dict[str, Any] | None = None,
 ) -> tuple[str, float]:
     del session
     logger.log(
         f"Stateless auxiliary call start: label={label} model={model} provider={provider} "
-        f"timeout={HERMES_SIGNAL_TIMEOUT_SECONDS}s"
+        f"timeout={HERMES_SIGNAL_TIMEOUT_SECONDS}s schema={'yes' if schema else 'no'}"
     )
     started = monotonic()
     try:
-        if provider == "custom:thunder-forge":
-            from openai import OpenAI
-
-            load_env_file()
-            client = OpenAI(
-                base_url="http://rock.lan:40116/v1",
-                api_key=os.environ.get("TF_USER_SHAG", ""),
-                max_retries=0,
-                timeout=HERMES_SIGNAL_TIMEOUT_SECONDS,
-            )
-            response = client.chat.completions.create(
-                model=model or "agent",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=1024,
-            )
-            text = sanitize_hermes_output(response.choices[0].message.content or "")
+        endpoint = resolve_endpoint(load_hermes_config(), provider, model)
+        if endpoint is not None:
+            client = open_client(endpoint, timeout=HERMES_SIGNAL_TIMEOUT_SECONDS)
+            text = sanitize_hermes_output(complete(client, endpoint.model, prompt, log=logger.log, schema=schema))
         else:
             from agent.auxiliary_client import call_llm, extract_content_or_reasoning
 
@@ -625,7 +617,9 @@ def run_area_signal_job(
         return run_shared_goals_reflection(task, logger, session.call_profiles["shared-goals-reflect"])
 
     if area_prompt_requests_json(area_prompt):
-        response_text, elapsed = run_hermes_raw(prompt, model, provider, logger, label, session)
+        response_text, elapsed = run_hermes_raw(
+            prompt, model, provider, logger, label, session, schema=AREA_CONTEXT_SCHEMA
+        )
         log_text_block(logger, f"Raw area response [{label}]", response_text, elapsed=elapsed)
         response_payload, reason = validate_json_response_strict(response_text, area_key)
         second_try_used = False
@@ -640,7 +634,7 @@ def run_area_signal_job(
             log_text_block(logger, f"Retry prompt delta [{label}:second_try]", retry_delta)
             retry_prompt = f"{prompt}\n\n" + retry_delta
             response_text, elapsed = run_hermes_raw(
-                retry_prompt, model, provider, logger, f"{label}:second_try", session
+                retry_prompt, model, provider, logger, f"{label}:second_try", session, schema=AREA_CONTEXT_SCHEMA
             )
             log_text_block(logger, f"Raw area response [{label}:second_try]", response_text, elapsed=elapsed)
             response_payload, reason = validate_json_response_strict(response_text, area_key)

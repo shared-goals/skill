@@ -75,6 +75,33 @@ sources; single-source pages carry `sources:` frontmatter only.
    the "Связи" sections of related concept pages — entities and comparisons
    only get inbound links if you add them.
 
+## Text audit workflow (WTD consistency checks)
+
+When asked to audit the WTD text for discrepancies (e.g. obligatory-language
+vs voluntariness, faith vs will):
+
+1. Refresh the checkout with `git -C ~/Work/whattodo pull --ff-only`, record
+   the commit in the report and in Hindsight.
+2. Grep the corpus (`text/*.md`) by the contested lexeme family (должен,
+   обязат, исполн, вера/воля), then context-check EVERY hit by hand — raw
+   grep counts mislead (many hits are neutral-technical or quoted speech of
+   others).
+3. Use `hindsight_recall` for concept pairs as candidates only;
+   `hindsight_reflect` may fail (empty error) — retry twice, then fall back
+   to recall + direct text reading without treating recall fragments as
+   verified quotes.
+4. Classify each finding: real contradiction / intentional contrast
+   (the text states both sides on purpose) / tonal friction / noise. The
+   must-vs-voluntary system is a DELIBERATE three-part design: no obligation
+   toward others, obligation-to-self allowed (Contract with oneself = Will),
+   formal contracts exempt. Check any candidate against all three parts
+   before calling it a contradiction.
+5. Proposed edits must link only BACKWARD (to earlier parts of the text),
+   never forward; if the natural link target sits later in the same file,
+   use a lexical echo instead of a hyperlink (or move the chapter).
+6. Deliver as a chat table (location, type, proposed wording) — no files;
+   wording changes are author's to apply or commit.
+
 ## Verification
 
 ```bash

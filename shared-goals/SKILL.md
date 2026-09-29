@@ -174,6 +174,6 @@ Select one most-hungry Shared Goal and keep only its line for execution.
 
 1. Prioritize exactly one Shared Goal by hunger and contract pressure.
 2. Delete every other LineContext; keep only the selected goal's line.
-3. Keep the selected goal's LineContext `signal` exactly as provided — it is already a copyable prompt for the next Hermes agent step, prepared deterministically by the daily-compass script's own Hindsight reflect call, not by this prompt.
+3. Keep the selected goal's LineContext `signal` exactly as provided — it is already a copyable prompt for the next Hermes agent step, synthesized from the goal and relevant read-only Hindsight recall.
 4. Preserve the selected goal's hashtag in the title.
 5. Keep AreaContext `signal` empty.

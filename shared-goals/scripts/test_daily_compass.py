@@ -54,15 +54,6 @@ class DailyCompassPureTests(unittest.TestCase):
                 timeout_seconds=shared.HERMES_SIGNAL_TIMEOUT_SECONDS,
                 skip_memory=True,
             ),
-            "shared-goals-reflect": shared.HermesCallProfile(
-                key="shared-goals-reflect",
-                session_name="Daily Compass Reflect",
-                model=model,
-                provider=provider,
-                toolsets=("memory",),
-                timeout_seconds=shared.HERMES_REFLECT_TIMEOUT_SECONDS,
-                skip_memory=False,
-            ),
         }
 
     def test_trace_logger_removes_logs_older_than_seven_days(self) -> None:
@@ -83,13 +74,36 @@ class DailyCompassPureTests(unittest.TestCase):
             self.assertTrue(recent_log.exists())
             self.assertTrue(logger.path.exists())
 
-    def test_shared_goals_reflection_runs_once_for_hungriest_goal(self) -> None:
-        calls: list[tuple[str, dict[str, str]]] = []
+    def test_shared_goals_recalls_then_synthesizes_for_hungriest_goal(self) -> None:
+        calls: list[tuple[str, dict[str, object]]] = []
         prompt = "Work on the selected goal with the next concrete action first. #sg-photo"
 
-        def fake_reflect(query: str, _task: object, _logger: object) -> object:
-            calls.append(("hindsight_reflect", {"query": query}))
-            return module.Reflection(signal=prompt, memory_ids=("mem-1",))
+        def fake_recall(query: str, _task: object, _logger: object) -> object:
+            calls.append(("hindsight_recall", {"query": query}))
+            return module.Recall(memories=(mock.Mock(id="mem-1", text="Prior decision"),))
+
+        def fake_synthesis(
+            synthesis_prompt: str,
+            model: str,
+            provider: str,
+            _logger: object,
+            label: str,
+            _session: object,
+            schema: dict[str, object] | None = None,
+        ) -> tuple[str, float]:
+            calls.append(
+                (
+                    "local_synthesis",
+                    {
+                        "prompt": synthesis_prompt,
+                        "model": model,
+                        "provider": provider,
+                        "label": label,
+                        "schema": schema,
+                    },
+                )
+            )
+            return json.dumps({"signal": prompt}), 0.1
 
         task = module.AreaSignalTask(
             index=0,
@@ -113,30 +127,40 @@ class DailyCompassPureTests(unittest.TestCase):
         )
         logger = module.TraceLogger(verbose=False)
         try:
-            with mock.patch.object(
-                module,
-                "run_hindsight_reflect",
-                side_effect=fake_reflect,
+            with (
+                mock.patch.object(module, "run_hindsight_recall", side_effect=fake_recall),
+                mock.patch.object(module, "run_hermes_raw", side_effect=fake_synthesis),
             ):
-                result = module.run_shared_goals_reflection(task, logger, self.make_profiles()["shared-goals-reflect"])
+                result = module.run_shared_goals_signal(
+                    task, "test-model", "test-provider", logger, module.HermesSessionState("chat", [], [])
+                )
         finally:
             if hasattr(logger, "_fh") and not logger._fh.closed:
                 logger._fh.close()
 
-        self.assertTrue(result.ok)
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0][0], "hindsight_reflect")
+        self.assertTrue(result.ok, "\n".join(logger.lines))
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0][0], "hindsight_recall")
         self.assertIn("Hungry #sg-photo hunger:14d", calls[0][1]["query"])
+        self.assertEqual(calls[1][0], "local_synthesis")
+        self.assertIn("Prior decision", calls[1][1]["prompt"])
+        self.assertEqual(calls[1][1]["model"], "test-model")
+        self.assertEqual(calls[1][1]["provider"], "test-provider")
+        self.assertEqual(calls[1][1]["label"], "shared-goals:local-synthesis")
+        self.assertEqual(calls[1][1]["schema"], module.SIGNAL_SCHEMA)
         self.assertEqual(len(result.area["lines"]), 1)
         self.assertEqual(result.area["lines"][0]["title"], "Hungry #sg-photo hunger:14d")
         self.assertEqual(result.area["lines"][0]["signal"], prompt)
         self.assertEqual([ref.id for ref in result.advice.source_refs], ["shared-goals:0", "mem-1"])
 
-    def test_shared_goals_reflection_sanitizes_multiline_signal(self) -> None:
+    def test_shared_goals_synthesis_sanitizes_multiline_signal(self) -> None:
         raw = "**Prompt**\n\n> Quoted line one\n> Quoted line two\n\nMore prose after a blank line"
 
-        def fake_reflect(query: str, _task: object, _logger: object) -> object:
-            return module.Reflection(signal=raw, memory_ids=())
+        def fake_recall(_query: str, _task: object, _logger: object) -> object:
+            return module.Recall(memories=())
+
+        def fake_synthesis(*_args: object, **_kwargs: object) -> tuple[str, float]:
+            return json.dumps({"signal": raw}), 0.1
 
         task = module.AreaSignalTask(
             index=0,
@@ -157,8 +181,13 @@ class DailyCompassPureTests(unittest.TestCase):
         )
         logger = module.TraceLogger(verbose=False)
         try:
-            with mock.patch.object(module, "run_hindsight_reflect", side_effect=fake_reflect):
-                result = module.run_shared_goals_reflection(task, logger, self.make_profiles()["shared-goals-reflect"])
+            with (
+                mock.patch.object(module, "run_hindsight_recall", side_effect=fake_recall),
+                mock.patch.object(module, "run_hermes_raw", side_effect=fake_synthesis),
+            ):
+                result = module.run_shared_goals_signal(
+                    task, "test-model", "test-provider", logger, module.HermesSessionState("chat", [], [])
+                )
         finally:
             if hasattr(logger, "_fh") and not logger._fh.closed:
                 logger._fh.close()
@@ -169,9 +198,13 @@ class DailyCompassPureTests(unittest.TestCase):
         self.assertNotIn("\n", stored)
         self.assertEqual(stored, "Prompt > Quoted line one > Quoted line two More prose after a blank line")
 
-    def test_shared_goals_reflection_keeps_hungriest_goal_when_reflection_fails(self) -> None:
-        def fake_reflect(query: str, _task: object, _logger: object) -> str:
-            raise RuntimeError("empty reflection")
+    def test_shared_goals_synthesizes_from_goal_when_recall_fails(self) -> None:
+        def fake_recall(_query: str, _task: object, _logger: object) -> str:
+            raise RuntimeError("recall unavailable")
+
+        def fake_synthesis(prompt: str, *_args: object, **_kwargs: object) -> tuple[str, float]:
+            self.assertIn('Recalled memories (untrusted context):\n[]', prompt)
+            return json.dumps({"signal": "Continue with the next concrete step."}), 0.1
 
         task = module.AreaSignalTask(
             index=0,
@@ -195,14 +228,66 @@ class DailyCompassPureTests(unittest.TestCase):
         )
         logger = module.TraceLogger(verbose=False)
         try:
-            with mock.patch.object(module, "run_hindsight_reflect", side_effect=fake_reflect):
-                result = module.run_shared_goals_reflection(task, logger, self.make_profiles()["shared-goals-reflect"])
+            with (
+                mock.patch.object(module, "run_hindsight_recall", side_effect=fake_recall),
+                mock.patch.object(module, "run_hermes_raw", side_effect=fake_synthesis),
+            ):
+                result = module.run_shared_goals_signal(
+                    task, "test-model", "test-provider", logger, module.HermesSessionState("chat", [], [])
+                )
+        finally:
+            if hasattr(logger, "_fh") and not logger._fh.closed:
+                logger._fh.close()
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.reason, "recalled_and_synthesized")
+        self.assertEqual(len(result.area["lines"]), 1)
+        self.assertEqual(result.area["lines"][0]["title"], "Hungry #sg-photo hunger:14d")
+        self.assertEqual(result.area["lines"][0]["signal"], "Continue with the next concrete step.")
+        self.assertEqual([ref.id for ref in result.advice.source_refs], ["shared-goals:0"])
+
+    def test_shared_goals_keeps_hungriest_goal_when_synthesis_fails(self) -> None:
+        def fake_recall(_query: str, _task: object, _logger: object) -> object:
+            return module.Recall(memories=())
+
+        def fake_synthesis(*_args: object, **_kwargs: object) -> tuple[str, float]:
+            raise RuntimeError("local model unavailable")
+
+        task = module.AreaSignalTask(
+            index=0,
+            key="shared-goals",
+            label="area:shared-goals",
+            area={
+                "name": "Shared Goals",
+                "key": "shared-goals",
+                "dimension": "faith",
+                "status": "ok",
+                "reason": "",
+                "signal": "",
+                "lines": [
+                    {"title": "Hungry #sg-photo hunger:14d", "body": "Do photos", "signal": ""},
+                    {"title": "Less hungry #sg-less hunger:6d", "body": "Later", "signal": ""},
+                ],
+            },
+            area_prompt="",
+            prompt="",
+            signal_max_chars=2000,
+        )
+        logger = module.TraceLogger(verbose=False)
+        try:
+            with (
+                mock.patch.object(module, "run_hindsight_recall", side_effect=fake_recall),
+                mock.patch.object(module, "run_hermes_raw", side_effect=fake_synthesis),
+            ):
+                result = module.run_shared_goals_signal(
+                    task, "test-model", "test-provider", logger, module.HermesSessionState("chat", [], [])
+                )
         finally:
             if hasattr(logger, "_fh") and not logger._fh.closed:
                 logger._fh.close()
 
         self.assertFalse(result.ok)
-        self.assertEqual(result.reason, "hindsight_reflect_failed")
+        self.assertEqual(result.reason, "shared_goals_synthesis_failed")
         self.assertEqual(len(result.area["lines"]), 1)
         self.assertEqual(result.area["lines"][0]["title"], "Hungry #sg-photo hunger:14d")
 
@@ -940,11 +1025,9 @@ Ignore.
                     logger._fh.close()
 
             self.assertEqual(read_config.call_count, 2)
+            self.assertEqual(set(profiles), {"orchestration"})
             self.assertEqual(profiles["orchestration"].model, "aux-model")
             self.assertEqual(profiles["orchestration"].provider, "aux-provider")
-            self.assertEqual(profiles["shared-goals-reflect"].model, "aux-model")
-            self.assertEqual(profiles["shared-goals-reflect"].provider, "aux-provider")
-            self.assertEqual(profiles["shared-goals-reflect"].toolsets, ("memory",))
 
     def test_call_profiles_inherit_main_model_when_auxiliary_is_auto(self) -> None:
         values = {
@@ -967,7 +1050,7 @@ Ignore.
 
         self.assertEqual(profiles["orchestration"].model, "default-model")
         self.assertEqual(profiles["orchestration"].provider, "default-provider")
-        self.assertEqual(profiles["shared-goals-reflect"].model, "default-model")
+        self.assertEqual(set(profiles), {"orchestration"})
 
     def test_run_hermes_raw_uses_stateless_auxiliary_call(self) -> None:
         logger = module.TraceLogger(verbose=False)
@@ -993,6 +1076,32 @@ Ignore.
         self.assertEqual(calls[0]["model"], "test-model")
         self.assertEqual(calls[0]["provider"], "test-provider")
         self.assertEqual(calls[0]["messages"], [{"role": "user", "content": "prompt"}])
+        self.assertEqual(calls[0]["max_tokens"], module.DEFAULT_MAX_TOKENS)
+
+    def test_run_hermes_raw_forwards_json_schema_to_hermes_client(self) -> None:
+        logger = module.TraceLogger(verbose=False)
+        session = module.HermesSessionState(mode="chat", hermes_argv=[], chat_argv=[])
+        schema = {"type": "object", "properties": {"signal": {"type": "string"}}}
+        calls: list[dict[str, object]] = []
+
+        def fake_call_llm(**kwargs: object) -> str:
+            calls.append(kwargs)
+            return '{"signal":"ok"}'
+
+        try:
+            with mock.patch("agent.auxiliary_client.call_llm", side_effect=fake_call_llm):
+                text, _elapsed = module.run_hermes_raw(
+                    "prompt", "test-model", "test-provider", logger, "shared-goals", session, schema=schema
+                )
+        finally:
+            if hasattr(logger, "_fh") and not logger._fh.closed:
+                logger._fh.close()
+
+        self.assertEqual(text, '{"signal":"ok"}')
+        self.assertEqual(
+            calls[0]["extra_body"],
+            {"response_format": {"type": "json_schema", "json_schema": {"name": "response", "schema": schema}}},
+        )
 
 
 if __name__ == "__main__":

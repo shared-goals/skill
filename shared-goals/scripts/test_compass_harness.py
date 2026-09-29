@@ -29,7 +29,6 @@ if str(SCRIPTS_DIR) not in sys.path:
 import shared_goals_platform as platform
 from compass.collect import run_boundary
 from compass.config import build_skill_index
-from compass.memory import Reflection
 from compass.models import BoundaryPayload
 
 
@@ -87,8 +86,11 @@ def _shared_goals_task(lines: list[dict]) -> object:
 
 
 def _selected_goal_title(lines: list[dict], logger, monkeypatch) -> str:
-    monkeypatch.setattr(compass, "run_hindsight_reflect", lambda *_: Reflection("Do the next step.", ()))
-    result = compass.run_shared_goals_reflection(_shared_goals_task(lines), logger, None)
+    monkeypatch.setattr(compass, "run_hindsight_recall", lambda *_: compass.Recall(memories=()))
+    monkeypatch.setattr(compass, "run_hermes_raw", lambda *_args, **_kwargs: ('{"signal":"Do the next step."}', 0.1))
+    result = compass.run_shared_goals_signal(
+        _shared_goals_task(lines), "test-model", "test-provider", logger, compass.HermesSessionState("chat", [], [])
+    )
     return result.area["lines"][0]["title"]
 
 

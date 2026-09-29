@@ -7,12 +7,12 @@
 - Critical bug: `run_hermes_raw()` reconstructs the orchestration `HermesCallProfile` without carrying `skip_memory=True`; production calls therefore omit `--ignore-rules` and can auto-retain generated Compass conversations in Hindsight.
 - Nested chat sessions also reuse named sessions across runs; empty toolsets do not explicitly restrict tools.
 - The platform already computes `dimension_order`; Compass should not derive priority by parsing rendered `hunger:Nd` titles. Never-fed and contract-pressure semantics need explicit rules.
-- Hindsight direct `reflect` is the correct read-only memory path. Generated recommendations are not facts and must not be retained.
+- Hindsight `recall` followed by local stateless LLM synthesis is the read-only memory path. Generated recommendations are not facts and must not be retained.
 
 ## Proposed target
 
 ```text
-Cron -> typed evidence collection -> scoped recall/reflect
+Cron -> typed evidence collection -> scoped recall -> local synthesis
      -> typed recommendations -> deterministic hunger/ranking
      -> validation -> render/deliver
 ```
@@ -22,7 +22,7 @@ Keep area skills and boundary scripts. Make platform/source evidence immutable; 
 ## Library direction
 
 - Pydantic models plus `yaml.safe_load` for contracts/configuration (already in the Hermes venv).
-- `hindsight-client` for recall/reflect only; no retain/write calls in Compass.
+- `hindsight-client` for recall only; no reflect, retain, or other write calls in Compass.
 - `agent.auxiliary_client.call_llm` for model calls (stateless, uses configured auxiliary provider); Pydantic validation with one retry instead of PydanticAI.
 - Jinja2 instead of the custom template interpreter.
 - Keep Hermes script-only cron and bounded concurrency; no Prefect/LangGraph for this linear workflow.
@@ -34,11 +34,11 @@ Keep area skills and boundary scripts. Make platform/source evidence immutable; 
 ## Baseline (2026-09-27)
 
 - Cron job `Daily Compass` is paused (`no_agent: true`, script `daily_compass_no_agent.py`, 08:00).
-- Hindsight server `0.10.1`: reflect supports `response_schema`, `tags`/`tags_match`, `include.facts` (`based_on`), `fact_types`; mental models and directives exist.
+- Hindsight server `0.10.1`: recall supports `tags`/`tags_match` and returns source memory IDs; mental models and directives exist.
 - Cron interpreter (`hermes-agent/venv`, Python 3.11) already ships `pydantic 2.13`, `jinja2 3.1`, `PyYAML 6.0`, `hindsight-client 0.6.1`, `httpx`. The skill's uv dev env has none of them.
-- Current work: Shared Goals uses direct `POST /reflect`; `run_hermes_raw()` now passes `skip_memory=True`, covered by a test asserting the production CLI invocation includes `--ignore-rules`.
+- Current work: Shared Goals uses tag-scoped `POST /recall` followed by the same stateless local LLM path as other areas; `run_hermes_raw()` now passes `skip_memory=True`, covered by a test asserting the production CLI invocation includes `--ignore-rules`.
 - Any `hermes chat` / `--oneshot` call opens SessionDB and the memory provider; `--ignore-rules` suppresses injected context and persistent-memory reads, but does not prove that no memory writes occur. `agent.auxiliary_client.call_llm()` is stateless (no session, no memory provider).
-- Reflect traces list a `learn` tool, so reflect write-freedom must be proven, not assumed.
+- Compass does not call Hindsight reflect, whose server-side tool-calling path was failing; local synthesis receives recalled text as untrusted context and cannot write to Hindsight.
 - Size: `daily-compass.py` 1,345 lines, `daily_compass_shared.py` 972, tests 1,346 (script suite green).
 
 ## Success targets
@@ -46,10 +46,10 @@ Keep area skills and boundary scripts. Make platform/source evidence immutable; 
 | # | Target | Measured by |
 |---|---|---|
 | S1 | A full run creates **zero** Hindsight documents, memory units, or mental models and **zero** Hermes sessions. | T-MEM-1..3, T-E2E-1 |
-| S2 | No Hermes agent subprocess: model calls go through a stateless client; memory access is recall/reflect only. | T-MEM-2, code search for `hermes chat`/`--oneshot` = 0 |
+| S2 | No Hermes agent subprocess: model calls go through a stateless client; memory access is recall only. | T-MEM-2, code search for `hermes chat`/`--oneshot` = 0 |
 | S3 | Platform `dimension_order` is the only hunger source; never-fed dimensions rank first; ties are stable. | T-RANK-* |
 | S4 | Evidence is immutable: LLM output can only add recommendation text/refs; titles, URLs, bodies, dimensions stay byte-equal. | T-CON-3, T-LLM-2 |
-| S5 | Every recommendation carries `area`, `source_refs` (line ids and/or Hindsight memory ids from `based_on`). | T-CON-2, T-LLM-3 |
+| S5 | Every recommendation carries `area`, `source_refs` (selected line id and any Hindsight recall memory ids). | T-CON-2, T-LLM-3 |
 | S6 | One area failing (script error, timeout, LLM invalid twice, Hindsight down) degrades only that area; run still renders. | T-FAIL-* |
 | S7 | Run finishes within cron limits: whole run ≤ 150 s, boundary scripts ≤ 45 s each, ≤ 1 LLM call per area + 1 synthesis. | T-E2E-2 |
 | S8 | Custom YAML parser, template interpreter, session registry, CLI-output scraping, and `state/daily-compass-session.json` are deleted. | code review |
@@ -63,8 +63,8 @@ no_agent cron -> daily_compass (hermes venv python)
   1 load areas      yaml.safe_load -> AreaConfig (pydantic)
   2 collect         boundary scripts in parallel -> Evidence (frozen)
   3 platform        GET /compass/shared-goals -> dimension_order + goals
-  4 memory (read)   hindsight-client reflect(response_schema, tags, based_on)
-  5 advise          call_llm(messages, response_format) -> AreaAdvice
+   4 memory (read)   hindsight-client recall(tags, tags_match) -> memories + IDs
+   5 advise          call_llm(goal + recalled context, response_format) -> AreaAdvice
   6 rank            deterministic: platform order, never-fed first, stable ties
   7 synthesize      one call_llm -> CompassSignal
   8 render          jinja2 template -> stdout (Telegram) + context snapshot
@@ -89,18 +89,18 @@ Ranking
 - T-RANK-4 Platform unavailable -> configured fallback order, flagged in output.
 
 Memory safety
-- T-MEM-1 Unit: memory adapter exposes only `recall`/`reflect`; no `retain`, no `learn`, no mental-model create; reflect sends `tags`/`tags_match` from area config.
+- T-MEM-1 Unit: memory adapter exposes only `recall`; no `reflect`, `retain`, `learn`, or mental-model create; recall sends `tags`/`tags_match` from area config and returns memory text + IDs.
 - T-MEM-2 Unit: no code path spawns `hermes chat`/`--oneshot` (subprocess spy records zero Hermes argv).
 - T-MEM-3 Live: snapshot bank stats (documents, memory units by type, mental models, operations) before/after one full run -> all deltas 0; SessionDB session count delta 0.
 
 LLM boundary
 - T-LLM-1 Valid structured response parses to `AreaAdvice`.
 - T-LLM-2 Invalid JSON or schema error retries once with the validation error, then marks the area `advice_failed` with evidence intact.
-- T-LLM-3 Reflect `structured_output` + `based_on` ids propagate into `source_refs`; `structured_output_error` falls back to text.
+- T-LLM-3 Recalled memory IDs and selected line ID propagate into `source_refs`; local synthesis requires schema-valid JSON.
 
 Failure isolation
 - T-FAIL-1 Boundary script timeout/non-zero exit -> area `error`, others render.
-- T-FAIL-2 Hindsight HTTP 500 / timeout -> Shared Goals advice omitted, evidence rendered.
+- T-FAIL-2 Hindsight recall HTTP error / timeout -> local synthesis continues from the authoritative goal without memory refs.
 - T-FAIL-3 LLM provider down -> run renders evidence-only Compass with exit 0.
 
 Rendering
@@ -123,9 +123,9 @@ End-to-end
    - Done: `collect_areas()` → frozen `Evidence` validated by `BoundaryPayload`; legacy `run_boundary_script`/`validate_boundary_payload` deleted. `fetch_platform_shared_goals()` returns `None` on outage → boundary `error/platform_unavailable`, and `compass-update` / `--update-compass` no longer overwrite Compass.md with an empty Shared Goals section. Fallback dimension order is part of task 4.
 4. **Rank.** `compass/rank.py` from platform `dimension_order`; delete `hunger:Nd` title parsing. Green: T-RANK-*.
    - Done: `dimension_order()` (platform order, SKILL.md fallback flagged in output) and `hungriest_line()` (first platform line; never-fed first). All T-RANK xfails resolved. Compass fetches the platform once itself; the Shared Goals boundary script still fetches separately.
-5. **Memory.** `compass/memory.py` with `hindsight-client` `reflect(response_schema, tags, include_facts)`; bank/url/key from `~/.hermes/hindsight/config.json`. Green: T-MEM-1, T-LLM-3, T-FAIL-2.
-   - Done: `MemoryReader` exposes only `reflect` (client is private and closed after use); structured `signal` with text fallback; `based_on` memory ids + selected line id become `AreaAdvice.source_refs`, stored under `advice` in the context snapshot. Optional `memory_tags`/`memory_tags_match` per area YAML (none set yet, so recall scope is unchanged).
-   - Open: T-MEM-3 live bank-delta check is blocked — on 2026-09-27 Hindsight `/reflect` returned 500 or hung >120 s for plain requests while `/health` was green. Re-run `/tmp`-style probe (stats + mental models + documents before/after one reflect) once reflect is healthy.
+5. **Memory.** `compass/memory.py` with `hindsight-client` `recall(tags, tags_match)`; bank/url/key from `~/.hermes/hindsight/config.json`. Green: T-MEM-1, T-LLM-3, T-FAIL-2.
+   - Done: `MemoryReader` exposes only `recall` (client is private and closed after use); local schema-constrained synthesis combines recalled text with the selected goal; recalled memory IDs + selected line ID become `AreaAdvice.source_refs`. Optional `memory_tags`/`memory_tags_match` per area YAML scope retrieval.
+   - Resolved: Daily Compass no longer depends on Hindsight `/reflect`, avoiding the server-side tool-calling failure. T-MEM-3 still requires live zero-write validation for a full run.
 6. **Advise.** `compass/advise.py` via `agent.auxiliary_client.call_llm` with JSON schema output and one validation retry; area prompts still read from each skill's `## Area signal`. Green: T-LLM-*, T-MEM-2, T-FAIL-3.
 7. **Render.** Port `templates/daily-output.md` to Jinja2; delete `tpl_*`. Green: T-REN-*.
 8. **Cut over.** Thin `daily-compass.py` CLI (`--dry-run`, `--verbose`, area filter); delete session registry, Hermes subprocess call layer, `daily-compass-session.json`, and custom template interpreter. Done in `778be81`; live T-E2E-1/S8/S9 validation remains before re-enable.

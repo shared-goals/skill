@@ -24,6 +24,13 @@ LINE_CONTEXT_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+SIGNAL_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {"signal": {"type": "string"}},
+    "required": ["signal"],
+    "additionalProperties": False,
+}
+
 AREA_CONTEXT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {

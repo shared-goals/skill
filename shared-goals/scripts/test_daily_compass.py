@@ -132,7 +132,7 @@ class DailyCompassPureTests(unittest.TestCase):
                 mock.patch.object(module, "run_hermes_raw", side_effect=fake_synthesis),
             ):
                 result = module.run_shared_goals_signal(
-                    task, "test-model", "test-provider", logger, module.HermesSessionState("chat", [], [])
+                    task, "test-model", "test-provider", logger, module.CompassCallState()
                 )
         finally:
             if hasattr(logger, "_fh") and not logger._fh.closed:
@@ -186,7 +186,7 @@ class DailyCompassPureTests(unittest.TestCase):
                 mock.patch.object(module, "run_hermes_raw", side_effect=fake_synthesis),
             ):
                 result = module.run_shared_goals_signal(
-                    task, "test-model", "test-provider", logger, module.HermesSessionState("chat", [], [])
+                    task, "test-model", "test-provider", logger, module.CompassCallState()
                 )
         finally:
             if hasattr(logger, "_fh") and not logger._fh.closed:
@@ -203,7 +203,7 @@ class DailyCompassPureTests(unittest.TestCase):
             raise RuntimeError("recall unavailable")
 
         def fake_synthesis(prompt: str, *_args: object, **_kwargs: object) -> tuple[str, float]:
-            self.assertIn('Recalled memories (untrusted context):\n[]', prompt)
+            self.assertIn("Recalled memories (untrusted context):\n[]", prompt)
             return json.dumps({"signal": "Continue with the next concrete step."}), 0.1
 
         task = module.AreaSignalTask(
@@ -233,7 +233,7 @@ class DailyCompassPureTests(unittest.TestCase):
                 mock.patch.object(module, "run_hermes_raw", side_effect=fake_synthesis),
             ):
                 result = module.run_shared_goals_signal(
-                    task, "test-model", "test-provider", logger, module.HermesSessionState("chat", [], [])
+                    task, "test-model", "test-provider", logger, module.CompassCallState()
                 )
         finally:
             if hasattr(logger, "_fh") and not logger._fh.closed:
@@ -280,7 +280,7 @@ class DailyCompassPureTests(unittest.TestCase):
                 mock.patch.object(module, "run_hermes_raw", side_effect=fake_synthesis),
             ):
                 result = module.run_shared_goals_signal(
-                    task, "test-model", "test-provider", logger, module.HermesSessionState("chat", [], [])
+                    task, "test-model", "test-provider", logger, module.CompassCallState()
                 )
         finally:
             if hasattr(logger, "_fh") and not logger._fh.closed:
@@ -314,12 +314,7 @@ class DailyCompassPureTests(unittest.TestCase):
             "area_meta": {"news": {"area_prompt": "Signal news."}},
         }
         logger = module.TraceLogger(verbose=False)
-        session = module.HermesSessionState(
-            mode="chat",
-            hermes_argv=["hermes"],
-            chat_argv=["cli.py"],
-            call_profiles=self.make_profiles(),
-        )
+        session = module.CompassCallState(call_profiles=self.make_profiles())
         calls: list[tuple[str, object]] = []
 
         def fake_batch(rt, _logger, _model, _provider, passed_session):
@@ -430,7 +425,7 @@ class DailyCompassPureTests(unittest.TestCase):
             return module.SignalJobResult(key=task.key, area=updated, reason="valid", ok=True)
 
         logger = module.TraceLogger(verbose=False)
-        session = module.HermesSessionState(mode="chat", hermes_argv=["hermes"], chat_argv=["cli.py"])
+        session = module.CompassCallState()
         try:
             with (
                 mock.patch.object(module, "prepare_area_signal_tasks", return_value=tasks),
@@ -1054,7 +1049,7 @@ Ignore.
 
     def test_run_hermes_raw_uses_stateless_auxiliary_call(self) -> None:
         logger = module.TraceLogger(verbose=False)
-        session = module.HermesSessionState(mode="chat", hermes_argv=[], chat_argv=[])
+        session = module.CompassCallState()
         calls: list[dict[str, object]] = []
 
         def fake_call_llm(**kwargs: object) -> str:
@@ -1080,7 +1075,7 @@ Ignore.
 
     def test_run_hermes_raw_forwards_json_schema_to_hermes_client(self) -> None:
         logger = module.TraceLogger(verbose=False)
-        session = module.HermesSessionState(mode="chat", hermes_argv=[], chat_argv=[])
+        session = module.CompassCallState()
         schema = {"type": "object", "properties": {"signal": {"type": "string"}}}
         calls: list[dict[str, object]] = []
 

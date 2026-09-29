@@ -3,13 +3,10 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 import re
-import shutil
 import subprocess
-import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,7 +17,6 @@ VALID_DIMENSIONS = {"faith", "will", "feeling", "mind"}
 BOUNDARY_SCRIPT_TIMEOUT_SECONDS = 180
 HERMES_SIGNAL_TIMEOUT_SECONDS = 180
 HINDSIGHT_RECALL_TIMEOUT_SECONDS = 30
-SESSION_COMMAND_TIMEOUT_SECONDS = 60
 
 ACTION_VERBS = {
     "add",
@@ -66,9 +62,6 @@ COMMON_JSON_CONTRACT_PHRASES = [
     "line facts",
 ]
 
-HERMES_AGENT_DIR = Path.home() / ".hermes" / "hermes-agent"
-HERMES_CLI_PY = HERMES_AGENT_DIR / "cli.py"
-HERMES_VENV_PY = HERMES_AGENT_DIR / "venv" / "bin" / "python"
 SHARED_GOALS_DIR = Path.home() / ".hermes" / "skills" / "shared-goals" / "shared-goals"
 SHARED_GOALS_LOGS_DIR = SHARED_GOALS_DIR / "logs"
 SHARED_GOALS_STATE_DIR = SHARED_GOALS_DIR / "state"
@@ -96,52 +89,6 @@ def load_env_file(env_path: Path | None = None) -> None:
                 os.environ[key] = value
     except OSError:
         return
-
-
-def resolve_hermes_argv() -> list[str]:
-    """Resolve hermes command argv with PATH and module fallback."""
-    env_bin = os.environ.get("HERMES_BIN", "").strip()
-    if env_bin:
-        if any(sep in env_bin for sep in ("/", "\\")):
-            return [str(Path(env_bin).expanduser())]
-        resolved_env = shutil.which(env_bin)
-        if resolved_env:
-            return [resolved_env]
-
-    hermes_bin = shutil.which("hermes")
-    if hermes_bin:
-        return [hermes_bin]
-
-    if importlib.util.find_spec("hermes_cli") is not None:
-        return [sys.executable, "-m", "hermes_cli.main"]
-
-    return []
-
-
-def resolve_non_tui_cli_argv() -> list[str]:
-    """Resolve non-TUI CLI entrypoint for scripted query/chat calls."""
-    if HERMES_CLI_PY.exists() and HERMES_VENV_PY.exists():
-        return [str(HERMES_VENV_PY), str(HERMES_CLI_PY)]
-    if HERMES_CLI_PY.exists():
-        return [sys.executable, str(HERMES_CLI_PY)]
-    return []
-
-
-def resolve_chat_cli_argv() -> list[str]:
-    """Resolve `hermes chat`; only this entrypoint supports title-keyed sessions."""
-    hermes_argv = resolve_hermes_argv()
-    return [*hermes_argv, "chat"] if hermes_argv else []
-
-
-def build_hermes_query_cmd(prompt: str) -> list[str]:
-    """Build robust query command that avoids TUI wrappers when available."""
-    cli_argv = resolve_non_tui_cli_argv()
-    if cli_argv:
-        return [*cli_argv, "--query", prompt, "--quiet"]
-    hermes_argv = resolve_hermes_argv()
-    if hermes_argv:
-        return [*hermes_argv, "-z", prompt]
-    return []
 
 
 CLI_BANNER_PREFIXES = ("Warning: Unknown toolsets:", "↪ restored workspace dir:")

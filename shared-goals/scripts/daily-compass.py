@@ -72,7 +72,6 @@ SHARED_GOALS_SKILL = SHARED_GOALS_DIR / "SKILL.md"
 AREAS_DIR = SHARED_GOALS_DIR / "references"
 TEMPLATE_FILE = SHARED_GOALS_DIR / "templates" / "daily-output.md"
 LOGS_DIR = SHARED_GOALS_DIR / "logs"
-SESSION_STATE_FILE = SHARED_GOALS_DIR / "state" / "daily-compass-session.json"
 
 HERMES_PROFILE_SPECS = {
     "orchestration": ("Daily Compass", (), HERMES_SIGNAL_TIMEOUT_SECONDS, True),
@@ -81,7 +80,6 @@ HERMES_PROFILE_SPECS = {
 DEFAULT_DIMENSIONS = ["faith", "will", "feeling", "mind"]
 VALID_DIMENSIONS = set(DEFAULT_DIMENSIONS)
 DEFAULT_COMPASS_PROMPT = "Write one short phrase about today's Shared Goals direction based on area summaries."
-DEFAULT_SESSION_TITLE = "Daily Compass"
 
 PHASE_BOUNDARY = "Phase 1: boundary scripts"
 PHASE_PROMPTS = "Phase 2: signal prompts"
@@ -120,17 +118,11 @@ class AreaSignalExecutionContext:
     model: str
     provider: str
     logger: TraceLogger
-    session: HermesSessionState
+    session: CompassCallState
 
 
 @dataclass
-class HermesSessionState:
-    mode: str
-    hermes_argv: list[str]
-    chat_argv: list[str]
-    session_id: str | None = None
-    session_name: str = DEFAULT_SESSION_TITLE
-    session_state_file: Path = SESSION_STATE_FILE
+class CompassCallState:
     call_profiles: dict[str, HermesCallProfile] = field(default_factory=dict)
 
 
@@ -542,7 +534,7 @@ def run_hermes_raw(
     provider: str,
     logger: TraceLogger,
     label: str,
-    session: HermesSessionState,
+    session: CompassCallState,
     schema: dict[str, Any] | None = None,
 ) -> tuple[str, float]:
     del session
@@ -600,7 +592,7 @@ def run_hermes(
     provider: str,
     logger: TraceLogger,
     label: str,
-    session: HermesSessionState,
+    session: CompassCallState,
     raw_response_label: str | None = None,
 ) -> str:
     text, elapsed = run_hermes_raw(prompt, model, provider, logger, label, session)
@@ -623,7 +615,7 @@ def run_area_signal_job(
     model: str,
     provider: str,
     logger: TraceLogger,
-    session: HermesSessionState,
+    session: CompassCallState,
 ) -> SignalJobResult:
     area_key = task.key
     label = task.label
@@ -681,7 +673,7 @@ def run_shared_goals_signal(
     model: str,
     provider: str,
     logger: TraceLogger,
-    session: HermesSessionState,
+    session: CompassCallState,
 ) -> SignalJobResult:
     """Recall relevant facts, then synthesize the hungriest Shared Goal locally."""
     lines = task.area.get("lines", [])
@@ -751,7 +743,9 @@ def run_shared_goals_signal(
             f"Hindsight recall and local synthesis done: {len(prompt)} chars, "
             f"memories={len(recall.memories)} llm_elapsed={elapsed:.1f}s"
         )
-        return SignalJobResult(key=task.key, area=updated_area, reason="recalled_and_synthesized", ok=True, advice=advice)
+        return SignalJobResult(
+            key=task.key, area=updated_area, reason="recalled_and_synthesized", ok=True, advice=advice
+        )
     except Exception as exc:
         logger.log(f"Shared Goals recall/synthesis failed: {exc!r}")
         updated_area = hydrate_boundary_area(task.area)
@@ -818,7 +812,7 @@ def run_area_signal_batch(
     logger: TraceLogger,
     model: str,
     provider: str,
-    session: HermesSessionState,
+    session: CompassCallState,
 ) -> None:
     tasks = prepare_area_signal_tasks(runtime)
     if not tasks:
@@ -860,13 +854,10 @@ def append_signal_note(area: BoundaryAreaContext, note: str) -> None:
         area["signal"] = note_clean
 
 
-def enrich_runtime(runtime: CompassContext, logger: TraceLogger, session: HermesSessionState) -> None:
+def enrich_runtime(runtime: CompassContext, logger: TraceLogger, session: CompassCallState) -> None:
     profile = session.call_profiles["orchestration"]
     model, provider = profile.model, profile.provider
-    if session.mode == "oneshot":
-        logger.log("Phase 3 session mode: oneshot (no shared chat context between prompts)")
-    else:
-        logger.log("Phase 3 session mode: chat (shared context across area and compass prompts)")
+    logger.log("Phase 3: stateless model calls")
     run_area_signal_batch(runtime, logger, model, provider, session)
 
     compass_prompt = runtime.get("signal_prompt", DEFAULT_COMPASS_PROMPT)
@@ -1008,9 +999,9 @@ def main() -> int:
         sys.stdout = TeeStream(orig_stdout, logger)
         sys.stderr = TeeStream(orig_stderr, logger)
     logger.log("daily-compass start")
-    session = HermesSessionState(mode="stateless", hermes_argv=[], chat_argv=[])
+    session = CompassCallState()
     session.call_profiles = resolve_hermes_call_profiles(None, [], logger)
-    logger.log("Hermes session mode: stateless auxiliary calls")
+    logger.log("Daily Compass stateless auxiliary calls ready")
 
     def log_phase(title: str) -> None:
         if args.verbose:

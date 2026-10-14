@@ -20,7 +20,9 @@ import yaml
 
 HOME = Path.home()
 HERMES_SKILLS_DIR = HOME / ".hermes" / "skills"
-SHARED_GOALS_DIR = HERMES_SKILLS_DIR / "shared-goals" / "shared-goals"
+SCRIPT_DIR = Path(__file__).resolve().parent
+SHARED_GOALS_DIR = SCRIPT_DIR.parent
+CUSTOM_SKILLS_DIR = SHARED_GOALS_DIR.parents[1]
 SHARED_GOALS_SCRIPTS_DIR = SHARED_GOALS_DIR / "scripts"
 AREA_REFS_DIR = SHARED_GOALS_DIR / "references"
 
@@ -204,7 +206,7 @@ def collect_skill_checks(
     add_check(checks, "yaml_status", status in {"active", "TBD"}, status or "missing", "skill")
     add_check(checks, "yaml_skill", bool(skill_name), skill_name or "missing", "skill")
 
-    skill_dir = build_skill_index(HERMES_SKILLS_DIR).get(skill_name) if skill_name else None
+    skill_dir = build_skill_index(HERMES_SKILLS_DIR, CUSTOM_SKILLS_DIR).get(skill_name) if skill_name else None
     add_check(checks, "skill_found", skill_dir is not None, str(skill_dir) if skill_dir else "not found", "skill")
     return skill_dir, name_val, dims, skill_name
 

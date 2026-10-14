@@ -15,13 +15,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from time import monotonic
 from typing import Any
+
+os.environ.setdefault("HERMES_DISABLE_LAZY_INSTALLS", "1")
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
@@ -31,6 +35,12 @@ import shared_goals_platform as sg_platform
 import yaml
 from compass.collect import boundary_script, collect_areas
 from compass.config import build_skill_index, load_active_areas
+from compass.deliver import (
+    clamp_message_body,
+    deliver_area_messages,
+    hermes_executable,
+    send_telegram_text,
+)
 from compass.llm import AREA_CONTEXT_SCHEMA, DEFAULT_MAX_TOKENS, SIGNAL_SCHEMA, complete, open_client, resolve_endpoint
 from compass.memory import Recall, TagsMatch, open_memory_reader
 from compass.models import AreaAdvice, AreaConfig, Evidence, SourceRef
@@ -38,8 +48,11 @@ from compass.rank import dimension_order, hungriest_line
 from daily_compass_shared import (
     AREA_SIGNAL_VERIFICATION_BASE_LINES,
     COMPASS_CONTEXT_STATE_FILE,
+    CUSTOM_SKILLS_DIR,
+    HERMES_SKILLS_DIR,
     HERMES_SIGNAL_TIMEOUT_SECONDS,
     HINDSIGHT_RECALL_TIMEOUT_SECONDS,
+    SHARED_GOALS_DIR,
     AreaContext,
     BoundaryAreaContext,
     CompassContext,
@@ -66,8 +79,6 @@ HERMES_AGENT_DIR = HOME / ".hermes" / "hermes-agent"
 if str(HERMES_AGENT_DIR) not in sys.path:
     sys.path.insert(0, str(HERMES_AGENT_DIR))
 
-HERMES_SKILLS_DIR = HOME / ".hermes" / "skills"
-SHARED_GOALS_DIR = HERMES_SKILLS_DIR / "shared-goals" / "shared-goals"
 SHARED_GOALS_SKILL = SHARED_GOALS_DIR / "SKILL.md"
 AREAS_DIR = SHARED_GOALS_DIR / "references"
 TEMPLATE_FILE = SHARED_GOALS_DIR / "templates" / "daily-output.md"
@@ -503,11 +514,20 @@ def read_hermes_config_value(
 
 
 def resolve_hermes_call_profiles(
-    registry_path: Path | None, hermes_argv: list[str], logger: TraceLogger
+    registry_path: Path | None,
+    hermes_argv: list[str],
+    logger: TraceLogger,
+    *,
+    provider_override: str = "",
+    model_override: str = "",
 ) -> dict[str, HermesCallProfile]:
     del registry_path
-    auxiliary_model = read_hermes_config_value(hermes_argv, "auxiliary.model", logger, allow_empty=True)
-    auxiliary_provider = read_hermes_config_value(hermes_argv, "auxiliary.provider", logger, allow_empty=True)
+    auxiliary_model = model_override.strip() or read_hermes_config_value(
+        hermes_argv, "auxiliary.model", logger, allow_empty=True
+    )
+    auxiliary_provider = provider_override.strip() or read_hermes_config_value(
+        hermes_argv, "auxiliary.provider", logger, allow_empty=True
+    )
     if auxiliary_model.strip().lower() in {"", "auto"}:
         auxiliary_model = read_hermes_config_value(hermes_argv, "model.default", logger)
         logger.log("Daily Compass model: inherited Hermes model.default")
@@ -980,13 +1000,54 @@ def render_template(context: dict[str, Any]) -> str:
     return out.strip() + "\n"
 
 
+def render_area_messages(context: dict[str, Any]) -> list[tuple[str, str]]:
+    """One (area name, message) per area; only the first carries the date header."""
+    messages: list[tuple[str, str]] = []
+    for dimension in context["dimensions"]:
+        for area in dimension["areas"]:
+            area_context = {
+                **context,
+                "show_header": not messages,
+                "show_footer": False,
+                "dimensions": [{**dimension, "areas": [area]}],
+            }
+            messages.append((area["name"], render_template(area_context).strip()))
+    return messages
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Shared Goals Daily Compass")
     p.add_argument("areas", nargs="*", help="Optional area keys, e.g. weather news")
     p.add_argument("--verbose", action="store_true", help="Print trace to stdout")
     p.add_argument("--fast", action="store_true", help="Skip signal phase")
     p.add_argument("--dry-run", action="store_true", help="Collect and render without signal calls")
+    p.add_argument("--send", action="store_true", help="Send one Telegram message per area")
+    p.add_argument("--llm-provider", default="", help="Override the LLM provider for signal calls")
+    p.add_argument("--llm-model", default="", help="Override the LLM model for signal calls")
     return p.parse_args()
+
+
+def send_error_output(text: str, logger: TraceLogger) -> None:
+    """Best-effort Telegram delivery of error output; failures are logged, never raised."""
+    try:
+        executable = hermes_executable()
+        send_telegram_text(executable, clamp_message_body(text), "error output")
+        logger.log("error output delivered to telegram")
+    except Exception as exc:
+        logger.log(f"error output delivery failed: {exc}")
+
+
+def send_area_messages(context: dict[str, Any], logger: TraceLogger) -> int:
+    messages = render_area_messages(context)
+    try:
+        deliver_area_messages(messages)
+    except (RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
+        logger.log(f"telegram delivery failed: {exc}")
+        send_error_output(f"⚠️ Daily Compass delivery failed: {exc}", logger)
+        print(f"Daily Compass delivery failed: {exc}", file=sys.stderr)
+        return 1
+    logger.log(f"telegram delivery complete: {len(messages)} area messages + status")
+    return 0
 
 
 def main() -> int:
@@ -1000,7 +1061,13 @@ def main() -> int:
         sys.stderr = TeeStream(orig_stderr, logger)
     logger.log("daily-compass start")
     session = CompassCallState()
-    session.call_profiles = resolve_hermes_call_profiles(None, [], logger)
+    session.call_profiles = resolve_hermes_call_profiles(
+        None,
+        [],
+        logger,
+        provider_override=args.llm_provider,
+        model_override=args.llm_model,
+    )
     logger.log("Daily Compass stateless auxiliary calls ready")
 
     def log_phase(title: str) -> None:
@@ -1021,7 +1088,7 @@ def main() -> int:
 
     try:
         log_phase(PHASE_BOUNDARY)
-        skill_index = build_skill_index(HERMES_SKILLS_DIR)
+        skill_index = build_skill_index(HERMES_SKILLS_DIR, CUSTOM_SKILLS_DIR)
         areas = load_active_areas(AREAS_DIR, args.areas, logger.log)
         runtime = build_runtime(areas, skill_index, logger)
         validate_runtime_or_raise(runtime)
@@ -1077,6 +1144,8 @@ def main() -> int:
             logger.write_chunk("\n")
             logger.write_chunk("=" * 12 + f" {PHASE_FINAL} " + "=" * 12 + "\n\n")
         logger.log("render complete")
+        if args.send:
+            return send_area_messages(context, logger)
         return 0
     except ValueError as exc:
         logger.log(f"runtime schema error: {exc}")
@@ -1098,7 +1167,10 @@ def main() -> int:
                 }
             ],
         }
-        print(render_template(fallback), end="")
+        rendered = render_template(fallback)
+        print(rendered, end="")
+        if args.send:
+            send_error_output(rendered, logger)
         return 1
     finally:
         if args.verbose:

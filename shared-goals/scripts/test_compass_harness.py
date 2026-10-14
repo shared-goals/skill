@@ -207,3 +207,23 @@ def test_render_matches_golden_output(monkeypatch) -> None:
     context = compass.build_render_context(_fixture("runtime_render.json"))
     golden = (FIXTURES / "golden_daily_output.md").read_text(encoding="utf-8")
     assert compass.render_template(context) == golden
+
+
+def test_area_messages_cover_each_area_with_header_only_first(monkeypatch) -> None:
+    monkeypatch.setattr(compass, "datetime", FrozenDatetime)
+    context = compass.build_render_context(_fixture("runtime_render.json"))
+    golden = (FIXTURES / "golden_daily_output.md").read_text(encoding="utf-8")
+
+    messages = compass.render_area_messages(context)
+
+    area_names = [area["name"] for dimension in context["dimensions"] for area in dimension["areas"]]
+    assert [name for name, _ in messages] == area_names
+    header = golden.splitlines()[0]
+    assert messages[0][1].startswith(header)
+    assert all(header not in body for _, body in messages[1:])
+    assert all("PROPORTION OF THE DAY" not in body for _, body in messages)
+    for dimension in context["dimensions"]:
+        for area in dimension["areas"]:
+            body = dict(messages)[area["name"]]
+            assert f"**{dimension['NAME']}**" in body
+            assert body in golden

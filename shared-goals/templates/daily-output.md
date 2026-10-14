@@ -1,3 +1,4 @@
+{% if show_header | default(true) %}
 ☀️ *{{ weekday }}, {{ date }}*
 
 {% if ranking_fallback %}
@@ -6,6 +7,7 @@ _⚠️ Shared Goals platform unavailable — default dimension order_
 
 {% if compass.signal %}
 *{{ compass.signal }}*
+{% endif %}
 {% endif %}
 
 {% for dimension in dimensions %}
@@ -26,6 +28,8 @@ _⚠️ Shared Goals platform unavailable — default dimension order_
 {% endfor %}
 {% endfor %}
 
+{% if show_footer | default(true) %}
 ⚖️ PROPORTION OF THE DAY
 
 [TBD] — будет рассчитано платформой на основе истории коммитов
+{% endif %}

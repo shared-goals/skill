@@ -26,12 +26,13 @@ def read_frontmatter(skill_md: Path) -> dict[str, Any]:
     return meta if isinstance(meta, dict) else {}
 
 
-def build_skill_index(skills_root: Path) -> dict[str, Path]:
+def build_skill_index(*skills_roots: Path) -> dict[str, Path]:
     index: dict[str, Path] = {}
-    for skill_md in sorted(skills_root.glob("**/SKILL.md")):
-        name = str(read_frontmatter(skill_md).get("name") or "").strip()
-        if name and name not in index:
-            index[name] = skill_md.parent
+    for skills_root in skills_roots:
+        for skill_md in sorted(skills_root.glob("**/SKILL.md")):
+            name = str(read_frontmatter(skill_md).get("name") or "").strip()
+            if name and name not in index:
+                index[name] = skill_md.parent
     return index
 
 

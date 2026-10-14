@@ -1047,6 +1047,25 @@ Ignore.
         self.assertEqual(profiles["orchestration"].provider, "default-provider")
         self.assertEqual(set(profiles), {"orchestration"})
 
+    def test_call_profiles_accept_cli_provider_and_model_overrides(self) -> None:
+        logger = module.TraceLogger(verbose=False)
+        try:
+            with mock.patch.object(module, "read_hermes_config_value") as read_config:
+                profiles = module.resolve_hermes_call_profiles(
+                    None,
+                    [],
+                    logger,
+                    provider_override="cli-provider",
+                    model_override="cli-model",
+                )
+        finally:
+            if hasattr(logger, "_fh") and not logger._fh.closed:
+                logger._fh.close()
+
+        read_config.assert_not_called()
+        self.assertEqual(profiles["orchestration"].model, "cli-model")
+        self.assertEqual(profiles["orchestration"].provider, "cli-provider")
+
     def test_run_hermes_raw_uses_stateless_auxiliary_call(self) -> None:
         logger = module.TraceLogger(verbose=False)
         session = module.CompassCallState()

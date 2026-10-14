@@ -9,7 +9,11 @@ from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from daily_compass_shared import BOUNDARY_SCRIPT_TIMEOUT_SECONDS, parse_json_object
+from daily_compass_shared import (
+    BOUNDARY_SCRIPT_TIMEOUT_SECONDS,
+    SCRIPT_DIR as SHARED_GOALS_SCRIPTS_DIR,
+    parse_json_object,
+)
 from pydantic import ValidationError
 
 from compass.models import AreaConfig, BoundaryPayload, Evidence, Line
@@ -28,13 +32,18 @@ def boundary_script(skill_dir: Path, area_key: str) -> Path:
 def run_boundary(
     script: Path, *, timeout: int = BOUNDARY_SCRIPT_TIMEOUT_SECONDS, env: Mapping[str, str] | None = None
 ) -> BoundaryPayload:
+    child_env = dict(os.environ if env is None else env)
+    pythonpath = child_env.get("PYTHONPATH", "")
+    child_env["PYTHONPATH"] = os.pathsep.join(
+        part for part in (str(SHARED_GOALS_SCRIPTS_DIR), pythonpath) if part
+    )
     try:
         proc = subprocess.run(
             [sys.executable, str(script)],
             capture_output=True,
             text=True,
             timeout=timeout,
-            env=dict(env) if env is not None else None,
+            env=child_env,
             check=False,
         )
     except subprocess.TimeoutExpired as exc:

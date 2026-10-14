@@ -15,19 +15,18 @@ and tracking progress together with others.
 or user-specific data in this file or any tracked file. All personal
 configuration lives exclusively in references/ which is gitignored.
 
-⛔ PITFALL (agent): the git repo lives at the category root:
-`~/.hermes/skills/shared-goals/`.
+⛔ PITFALL (agent): the git repo lives at this skill directory.
 Remote: git@github.com:shared-goals/skill.git
 Work directly there — never clone to /tmp to edit.
-To sync: cd ~/.hermes/skills/shared-goals && git pull / git push
+To sync: cd . && git pull / git push
 
 ## Local Skill Setup
 
 This skill lives as a git repo tracked against `git@github.com:shared-goals/skill.git`:
 
 ```bash
-# ~/.hermes/skills/shared-goals/ IS the git repo
-cd ~/.hermes/skills/shared-goals
+# This skill directory IS the git repo
+cd .
 git status   # check sync
 git push     # publish changes
 ```
@@ -73,7 +72,7 @@ See [Shared Goals PRD](https://github.com/shared-goals/prd) for full workflow de
 
 This skill directory is the git repo:
 ```bash
-cd ~/.hermes/skills/shared-goals
+cd .
 git remote -v  # → git@github.com:shared-goals/skill.git
 ```
 `references/` is gitignored — never committed. Personal area yamls stay local only.
@@ -154,10 +153,13 @@ Daily Compass full runs include live platform data from
 `GET /api/v1/compass/next-steps` when configured. Selected-area debug runs keep
 using local `references/*.yaml` only.
 
-Recommendation-only run for cron:
+Recommendation-only run (prints the rendered compass, sends nothing):
 
 ```bash
 python3 shared-goals/scripts/daily-compass.py
+
+# Send one Telegram message per area plus a status message (cron and `make compass-run`):
+python3 shared-goals/scripts/daily-compass.py --send
 
 Update Compass.md Shared Goals section from platform:
 

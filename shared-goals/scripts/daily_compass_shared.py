@@ -62,7 +62,10 @@ COMMON_JSON_CONTRACT_PHRASES = [
     "line facts",
 ]
 
-SHARED_GOALS_DIR = Path.home() / ".hermes" / "skills" / "shared-goals" / "shared-goals"
+SCRIPT_DIR = Path(__file__).resolve().parent
+SHARED_GOALS_DIR = SCRIPT_DIR.parent
+CUSTOM_SKILLS_DIR = SHARED_GOALS_DIR.parents[1]
+HERMES_SKILLS_DIR = Path.home() / ".hermes" / "skills"
 SHARED_GOALS_LOGS_DIR = SHARED_GOALS_DIR / "logs"
 SHARED_GOALS_STATE_DIR = SHARED_GOALS_DIR / "state"
 COMPASS_CONTEXT_STATE_FILE = SHARED_GOALS_STATE_DIR / "daily-compass-context.json"

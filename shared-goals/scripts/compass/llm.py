@@ -53,20 +53,19 @@ class Endpoint:
 
 
 def resolve_endpoint(config: Mapping[str, Any], provider: str, model: str) -> Endpoint | None:
-    """Endpoint for a `custom:<name>` provider from Hermes `custom_providers`; None for other providers."""
+    """Endpoint for a `custom:<name>` provider from Hermes `providers`; None for other providers."""
     if not provider.startswith("custom:"):
         return None
     name = provider.split(":", 1)[1]
-    for entry in config.get("custom_providers") or []:
-        if isinstance(entry, dict) and entry.get("name") == name:
-            key_env = str(entry.get("key_env") or "").strip()
-            api_key = os.environ.get(key_env, "") if key_env else str(entry.get("api_key") or "")
-            return Endpoint(
-                base_url=str(entry.get("base_url") or "").rstrip("/"),
-                api_key=api_key,
-                model=model or str(entry.get("model") or ""),
-            )
-    raise ValueError(f"custom provider '{name}' not found in custom_providers")
+    entry = (config.get("providers") or {}).get(name)
+    if not isinstance(entry, dict):
+        raise ValueError(f"custom provider '{name}' not found in providers")
+    key_env = str(entry.get("key_env") or "").strip()
+    return Endpoint(
+        base_url=str(entry.get("api") or "").rstrip("/"),
+        api_key=os.environ.get(key_env, "") if key_env else "",
+        model=model or str(entry.get("default_model") or ""),
+    )
 
 
 def open_client(endpoint: Endpoint, *, timeout: float) -> Any:

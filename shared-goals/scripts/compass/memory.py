@@ -71,7 +71,7 @@ def open_memory_reader(config_path: Path, *, timeout: float) -> Iterator[MemoryR
         config = json.loads(config_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         config = {}
-    api_url = str(config.get("api_url") or os.environ.get("HINDSIGHT_API_URL", "http://rock.lan:8889")).rstrip("/")
+    api_url = str(config.get("api_url") or os.environ.get("HINDSIGHT_API_URL", "http://localhost:8889")).rstrip("/")
     api_key = str(config.get("apiKey") or os.environ.get("HINDSIGHT_API_KEY", "")).strip() or None
     bank_id = str(config.get("bank_id") or "hermes").strip() or "hermes"
     client = Hindsight(base_url=api_url, api_key=api_key, timeout=timeout)

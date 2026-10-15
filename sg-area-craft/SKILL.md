@@ -280,7 +280,6 @@ Use the centralized `run_hermes_call` executor and a stable `HermesCallProfile` 
 4. Keep guidance concrete and operational, not philosophical.
 5. Do not skip validation.
 6. Use semantic timeout constants from `daily_compass_shared` — never hardcode timeout values in area scripts, daily-compass, or area-test.
-6. Do not skip validation.
 
 ## Pitfall: `status: debug` in area YAML fails area-test
 
@@ -300,6 +299,25 @@ When a boundary script calls `hermes -z` (e.g. for hindsight recall or SOUL refl
 - **Graceful degradation is mandatory.** On timeout or error, return a valid LineContext with `body` set to the raw error message (not wrapped in "Error is Ok") and empty `signal`. The script must always exit 0 with valid JSON.
 - **Parse JSON from stdout.** `hermes -z` output may contain prose around the JSON. Use `parse_json_object()` from `daily_compass_shared` to extract the JSON payload.
 - **Cost and latency.** Each `hermes -z` call starts a full Hermes session. In Daily Compass, boundary scripts run in parallel (max 4 workers), so multiple `hermes -z` calls can run concurrently.
+
+## Pitfall: public-repo hygiene in scripts and tests
+
+The shared-goals skill repo (`my-skills/shared-goals/shared-goals/`) is public on GitHub.
+Never commit real internal hostnames (`*.lan`), LAN ports tied to them, private env-var
+names, or home paths in test fixtures or fallback defaults — use neutral placeholders
+(`tf.test`, `TEST_PROVIDER_KEY`, `http://localhost:8889`). Runtime values come from
+env/config; a hardcoded internal default in committed code leaks topology. Before
+committing, `grep -rn '<lan-host>\|<PRIVATE_ENV>' scripts/` including pre-existing lines.
+
+## Pitfall: skill scripts reading Hermes config schema
+
+Skill scripts (`compass/llm.py` and friends) read `~/.hermes/config.yaml` directly. After
+a Hermes update migrates the config schema (key renames like `custom_providers` →
+`providers`), every reader of the old key fails instantly with a lookup error — and
+because callers catch exceptions, the failure can stay silent while degraded output
+ships. After any Hermes update: grep scripts for `config.get(...)` keys and verify each
+against the live schema; and a pipeline that produced zero LLM results must exit
+non-zero (fail loud), never render raw boundary output as if it were a normal run.
 
 ## Pitfall: Cron delivery truncates output at 4000 chars
 

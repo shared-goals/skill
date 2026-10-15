@@ -231,6 +231,12 @@ a generic summary.
 - HTML must be self-contained except for optional external fonts.
 - Dark theme is mandatory.
 - Send the generated file; do not merely describe where it was saved.
+- Delivery from a CLI/non-gateway interface: a MEDIA: tag is NOT intercepted
+  there and prints as literal text. Send the file directly via Telegram Bot
+  API instead: source `~/.hermes/.env` and
+  `curl -s "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendDocument" \
+  -F chat_id="$TELEGRAM_HOME_CHANNEL" -F document=@<path> -F caption=...`
+  — verify the response `"ok": true` before claiming delivery.
 - Do not commit or publish generated lessons unless explicitly requested.
 - When refactoring: update the skill first, THEN regenerate the HTML by
   following the updated skill. Never hand-patch the HTML alongside skill

@@ -855,6 +855,8 @@ def run_area_signal_batch(
             continue
         processed += 1
     logger.log(f"Phase 3 area signal complete: processed={processed}, failed={failed}")
+    if processed == 0:
+        raise SystemExit(f"all {len(tasks)} area signals failed")
 
 
 def should_retry_area_signal(reason: str, response_payload: AreaContext | None) -> bool:

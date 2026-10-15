@@ -440,6 +440,53 @@ class DailyCompassPureTests(unittest.TestCase):
         self.assertEqual(runtime["areas"][0]["signal"], "news-done")
         self.assertEqual(runtime["areas"][1]["signal"], "weather-done")
 
+    def test_run_area_signal_batch_exits_non_zero_when_all_signals_fail(self) -> None:
+        runtime = {"areas": [None, None], "area_meta": {}, "advice": {}}
+        tasks = [
+            module.AreaSignalTask(index=0, key="news", label="area:news", area={}, area_prompt="p", prompt="p"),
+            module.AreaSignalTask(index=1, key="weather", label="area:weather", area={}, area_prompt="p", prompt="p"),
+        ]
+        logger = module.TraceLogger(verbose=False)
+
+        def fake_execute(_task, _context):
+            return module.SignalJobResult(key=_task.key, area=None, reason="invalid", ok=False)
+
+        try:
+            with (
+                mock.patch.object(module, "prepare_area_signal_tasks", return_value=tasks),
+                mock.patch.object(module, "execute_area_signal_task", side_effect=fake_execute),
+            ):
+                with self.assertRaises(SystemExit):
+                    module.run_area_signal_batch(runtime, logger, "", "", module.CompassCallState())
+        finally:
+            if hasattr(logger, "_fh") and not logger._fh.closed:
+                logger._fh.close()
+
+    def test_run_area_signal_batch_partial_success_does_not_exit(self) -> None:
+        runtime = {"areas": [None, None], "area_meta": {}, "advice": {}}
+        tasks = [
+            module.AreaSignalTask(index=0, key="news", label="area:news", area={}, area_prompt="p", prompt="p"),
+            module.AreaSignalTask(index=1, key="weather", label="area:weather", area={}, area_prompt="p", prompt="p"),
+        ]
+        logger = module.TraceLogger(verbose=False)
+
+        def fake_execute(task, _context):
+            if task.key == "news":
+                return module.SignalJobResult(key=task.key, area=None, reason="invalid", ok=False)
+            updated = module.hydrate_boundary_area(task.area)
+            updated["signal"] = "done"
+            return module.SignalJobResult(key=task.key, area=updated, reason="valid", ok=True)
+
+        try:
+            with (
+                mock.patch.object(module, "prepare_area_signal_tasks", return_value=tasks),
+                mock.patch.object(module, "execute_area_signal_task", side_effect=fake_execute),
+            ):
+                module.run_area_signal_batch(runtime, logger, "", "", module.CompassCallState())
+        finally:
+            if hasattr(logger, "_fh") and not logger._fh.closed:
+                logger._fh.close()
+
     def test_build_area_signal_tasks_includes_only_prompted_areas(self) -> None:
         runtime = {
             "areas": [

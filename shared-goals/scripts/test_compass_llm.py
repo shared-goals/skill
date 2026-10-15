@@ -67,18 +67,59 @@ def test_complete_logs_truncation() -> None:
     assert any("truncated" in line for line in logs)
 
 
-def test_resolve_endpoint_reads_named_custom_provider(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("TF_TEST_KEY", "secret")
+def test_resolve_endpoint_reads_providers_map(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TEST_PROVIDER_KEY", "secret")
     config = {
-        "custom_providers": [
-            {"name": "tf", "base_url": "http://tf.test/v1/", "key_env": "TF_TEST_KEY", "model": "agent"}
-        ]
+        "providers": {
+            "thunder-forge": {
+                "api": "http://tf.test:40116/v1/",
+                "key_env": "TEST_PROVIDER_KEY",
+                "transport": "chat_completions",
+                "default_model": "agent",
+                "models": {"agent": {"context_length": 262144}},
+            }
+        }
     }
+
+    endpoint = resolve_endpoint(config, "custom:thunder-forge", "")
+
+    assert endpoint is not None
+    assert (endpoint.base_url, endpoint.api_key, endpoint.model) == (
+        "http://tf.test:40116/v1",
+        "secret",
+        "agent",
+    )
+    assert resolve_endpoint(config, "nous", "m") is None
+    with pytest.raises(ValueError):
+        resolve_endpoint(config, "custom:unknown", "")
+
+
+def test_resolve_endpoint_passed_model_wins_over_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TEST_PROVIDER_KEY", "secret")
+    config = {
+        "providers": {
+            "thunder-forge": {
+                "api": "http://tf.test:40116/v1",
+                "key_env": "TEST_PROVIDER_KEY",
+                "default_model": "agent",
+            }
+        }
+    }
+
+    endpoint = resolve_endpoint(config, "custom:thunder-forge", "coder")
+
+    assert endpoint is not None
+    assert (endpoint.base_url, endpoint.api_key, endpoint.model) == (
+        "http://tf.test:40116/v1",
+        "secret",
+        "coder",
+    )
+
+
+def test_resolve_endpoint_missing_key_env_yields_empty_api_key() -> None:
+    config = {"providers": {"tf": {"api": "http://tf.test/v1", "key_env": "TF_MISSING_KEY", "default_model": "agent"}}}
 
     endpoint = resolve_endpoint(config, "custom:tf", "")
 
     assert endpoint is not None
-    assert (endpoint.base_url, endpoint.api_key, endpoint.model) == ("http://tf.test/v1", "secret", "agent")
-    assert resolve_endpoint(config, "nous", "m") is None
-    with pytest.raises(ValueError):
-        resolve_endpoint(config, "custom:missing", "")
+    assert (endpoint.base_url, endpoint.api_key, endpoint.model) == ("http://tf.test/v1", "", "agent")

@@ -169,6 +169,14 @@ python3 shared-goals/scripts/daily-shared-goals-status.py --update-compass
 ## Compass signal
 
 Write one short phrase about today's Shared Goals direction based on the prompt drafts.
+## Daily Compass troubleshooting
+
+Debug a bad or degraded Daily Compass run from the trace log, not from the sent message:
+
+1. Read the newest `logs/<stamp>.log` in this skill directory (one per run; `<stamp>.<area>.log` for per-area detail). The sent Telegram message is a render — it hides what failed.
+2. The log is split into named phases: `Phase 1: boundary scripts`, `Phase 2: signal prompts`, `Phase 3: signal responses`, then render/delivery. Match the symptom to a phase: raw boundary JSON in the output means Phase 3 failed entirely; `[ERR:hermes_unavailable]` is the sentinel value `run_hermes_raw()` returns on any LLM-call exception — grep the log for `auxiliary call failed` to see the real error.
+3. Do not trust cron status: a run where every signal fails can still report `ok`. Check `Phase 3 area signal complete: processed=X, failed=Y` in the log before concluding health.
+4. The signal pipeline resolves its LLM endpoint from the Hermes config (`scripts/compass/llm.py`, `resolve_endpoint`). After any `hermes update` or config-schema migration, grep that resolver against the current `~/.hermes/config.yaml` provider section BEFORE assuming the pipeline is broken elsewhere — a schema rename makes every call fail instantly with `elapsed=0.0s`, which distinguishes config mismatch from a network/model problem (real network failures have elapsed > 0 and retries).
 
 ## Area signal
 

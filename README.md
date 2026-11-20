@@ -79,7 +79,6 @@ Daily Compass is the seed of something larger: a companion that asks each mornin
 | Platform | `shared-goals` | Platform entities, API connector, and Daily Compass |
 | Platform | `sg-area-craft` | Develop and test local Daily Compass areas |
 | Text and learning | `wtd-content-analyze` | Compare outside material with WTD, verifying quotations against the source |
-| Text and learning | `wtd-grammar` | Review authored Russian prose and cite the rules behind proposed corrections |
 | Text and learning | `wtd-changelog` | Draft a digest of meaningful changes between revisions of WTD |
 | Text and learning | `lesson-maker` | Turn a topic or reviewed analysis into a self-contained HTML lesson |
 

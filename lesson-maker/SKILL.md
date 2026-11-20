@@ -78,6 +78,9 @@ Required sections:
    - exact reference quotations with stable hyperlinks or file/source labels
      when available;
    - semantic paraphrases clearly labelled as such.
+   - For WTD quotations link to the public site, not the bare repo path:
+     `https://text.sharedgoals.ru/<page>#<anchor>` (keep the `file:line`
+     reference as provenance alongside the link).
 5. **Comparison table**
    - section heading: use a non-commercial name — avoid "feature comparison"
      or "product matrix" connotations. Acceptable alternatives:
@@ -242,3 +245,8 @@ a generic summary.
   following the updated skill. Never hand-patch the HTML alongside skill
   changes — the skill is the single source of truth and the HTML must be
   regenerated from it.
+- After delivery, the user may supply their own positions or corrections.
+  Add them as a provenance-labeled section (e.g. «Позиция автора» — separate
+  from source quotations and corpus quotations), renumber subsequent sections,
+  note the addition in «Sources and method notes», and regenerate the file
+  from the skill. Never merge user positions into source or corpus quotes.

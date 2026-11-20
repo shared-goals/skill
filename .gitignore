@@ -8,3 +8,10 @@
 areas/
 shared-goals/state/
 shared-goals/runtime/
+.env
+.env.*
+!.env.example
+# Only the reviewed public rule catalog is distributed.
+!/wtd-grammar/references/
+/wtd-grammar/references/*
+!/wtd-grammar/references/orfogrammka-rule-catalog.md

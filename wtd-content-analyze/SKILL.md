@@ -25,7 +25,8 @@ This skill owns research and comparison:
 
 1. retrieve and validate source text or transcript;
 2. identify main ideas and source evidence;
-3. recall and reflect on the WTD corpus through Hindsight using the `wtd` tag;
+3. recall WTD context from Hindsight using the `wtd` tag;
+   synthesis is performed by the agent model, not by reflect;
 4. verify exact WTD quotations against the local source repository;
 5. compare common ground, different foundations, accents, and tensions;
 6. formulate questions for discussion;
@@ -55,6 +56,18 @@ Before searching it:
 Do not discard local changes, reset, rebase, or resolve conflicts automatically.
 If a pull is blocked by local changes or fails, report that source freshness is
 uncertain and continue only if the user has not required a fresh checkout.
+
+**No checkout on this host? Use the published site.** The corpus is a separate
+content repo (`whattodo`), so grepping the skill/hermes tree for a person or
+term finds only references and memory notes, never chapter text — don't conclude
+the text is missing. The live corpus is https://text.sharedgoals.ru: one route
+per chapter (`/p2-155-photo/`) with `#anchor` sections, plus a people index
+(`/p2-100-authors/`) and cross-chapter links of the form
+`text.sharedgoals.ru/<chapter>/#<anchor>`. Fast path for "search the WTD text for
+X": grep `~/.hermes/cache/web/text.sharedgoals.ru-*.md` (web_extract leaves
+snapshots there) to locate the chapter, then `web_extract` that chapter page and
+read the anchored section. Those cache files are stale snapshots — quote from
+the live page, and report the source as the site rather than a pinned commit.
 
 The WTD corpus is also loaded into Hindsight with tag `wtd`. Use Hindsight for
 semantic recall and synthesis, not for unverifiable literal quotations.
@@ -118,14 +131,24 @@ Use `hindsight_recall` with the `wtd` tag only as a coarse candidate search:
 it returns fragmented facts, often mixed with unrelated history, so treat it
 as raw material, never as the final synthesis.
 
-Use `hindsight_reflect` as the primary synthesis tool: it connects the corpus
-concepts into a coherent picture (e.g. it can surface that «молитва = малая
-регулярная инвестиция времени в разговор с Богом» and resolve apparent
-tensions such as «мгновенно vs постепенно» into one mechanism).
+Use **`hindsight_recall`** as the only Hindsight retrieval layer. **Do not call
+reflect** — use recall for retrieval. Synthesis is the job of the **agent model**: it reasons
+over recall bundles plus verified repository quotes and produces the comparison
+itself.
 
-If `hindsight_reflect` fails or returns an empty response, retry it once or
-twice before falling back — do not silently substitute `recall`. A successful
-comparison requires the reflect synthesis.
+Because recall is fragmented and noisy, compensate with coverage, not with a
+single magic query: run several targeted recall queries (one per important
+source idea), plus a broad one, and treat the union as raw material. The
+quality of the comparison then rests on step 4 — verifying exact quotations
+in the local WTD checkout — and on the agent's own synthesis, which must
+connect the corpus concepts into a coherent picture (e.g. surface that
+«молитва = малая регулярная инвестиция времени в разговор с Богом» and
+resolve apparent tensions such as «мгновенно vs постепенно» into one
+mechanism).
+
+Do not silently substitute recall for reflect and present it as the same
+layer — the report's limitations section must state that synthesis is
+agent-side over recall.
 
 In particular preserve these distinctions:
 
@@ -246,7 +269,8 @@ The helper invokes the Hermes-managed Python environment for the existing `youtu
 ## Dependencies
 
 - extraction tools for pages and `youtube-content` for transcript extraction;
-- Hindsight `recall` and `reflect` with tag `wtd`;
+- Hindsight `recall` with tag `wtd` (reflect is retired — agent-side
+  synthesis over recall instead);
 - local WTD source checkout for exact quotations;
 - `session_search` for prior sermons and user corrections;
 - `lesson-maker` only after explicit user acceptance.
@@ -257,7 +281,8 @@ The helper invokes the Hermes-managed Python environment for the existing `youtu
   limitation and ask for source text or subtitles rather than inventing a
   summary.
 - If WTD Hindsight retrieval fails, provide the transcript analysis only and
-  clearly say that the comparison layer could not be completed.
+  clearly say that the comparison layer could not be completed. Do not retry
+  reflect: it is retired for this workflow (see step 3).
 - If the local WTD repository cannot be refreshed, state the commit used and
   mark quotation freshness as uncertain.
 - If the sources genuinely do not correspond, say so explicitly.

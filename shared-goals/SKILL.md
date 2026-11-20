@@ -161,6 +161,10 @@ python3 shared-goals/scripts/daily-compass.py
 # Send one Telegram message per area plus a status message (cron and `make compass-run`):
 python3 shared-goals/scripts/daily-compass.py --send
 
+# If using a local Makefile wrapper: positional area names go in COMPASS_ARGS,
+# never `--areas`:
+make compass-run COMPASS_ARGS="<area> --dry-run"
+
 Update Compass.md Shared Goals section from platform:
 
 python3 shared-goals/scripts/daily-shared-goals-status.py --update-compass
@@ -177,6 +181,9 @@ Debug a bad or degraded Daily Compass run from the trace log, not from the sent 
 2. The log is split into named phases: `Phase 1: boundary scripts`, `Phase 2: signal prompts`, `Phase 3: signal responses`, then render/delivery. Match the symptom to a phase: raw boundary JSON in the output means Phase 3 failed entirely; `[ERR:hermes_unavailable]` is the sentinel value `run_hermes_raw()` returns on any LLM-call exception — grep the log for `auxiliary call failed` to see the real error.
 3. Do not trust cron status: a run where every signal fails can still report `ok`. Check `Phase 3 area signal complete: processed=X, failed=Y` in the log before concluding health.
 4. The signal pipeline resolves its LLM endpoint from the Hermes config (`scripts/compass/llm.py`, `resolve_endpoint`). After any `hermes update` or config-schema migration, grep that resolver against the current `~/.hermes/config.yaml` provider section BEFORE assuming the pipeline is broken elsewhere — a schema rename makes every call fail instantly with `elapsed=0.0s`, which distinguishes config mismatch from a network/model problem (real network failures have elapsed > 0 and retries).
+5. Boundary scripts that need `hermes_cli` or `hermes_state` must NOT import them directly or expect `~/.hermes/hermes-agent/venv/` — there is no venv; hermes-agent is a uv project. Run `uv --directory ~/.hermes/hermes-agent run python -c "..."` in a subprocess and parse its JSON stdout (fall back to `~/.hermes/tools/uv-*/uv` when `uv` is not on PATH).
+6. When reproducing a boundary failure, run the failing command under the pipeline's interpreter (`PYTHONPATH=<shared-goals-scripts> uv run ...`), not the login shell — environment leaks (e.g. `UV` exported by `uv run`) only appear there, and a clean-shell success proves nothing.
+7. Strip `UV` from the env of any subprocess that invokes `make`: `uv run` exports `UV=<path-to-uv>`, and a child Makefile using `UV ?= uv run` then expands it to the bare binary, turning `uv run <cmd>` into `uv <cmd>` and failing with an unrecognized-subcommand error.
 
 ## Area signal
 

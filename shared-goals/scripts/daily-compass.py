@@ -32,7 +32,6 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 import shared_goals_platform as sg_platform
-import yaml
 from compass.collect import boundary_script, collect_areas
 from compass.config import build_skill_index, load_active_areas
 from compass.deliver import (
@@ -61,6 +60,7 @@ from daily_compass_shared import (
     build_numbered_lines,
     extract_section,
     load_env_file,
+    load_hermes_config,
     normalize_text,
     parse_json_object,
     project_boundary_to_area_context,
@@ -427,10 +427,6 @@ def resolve_area_signal_prompt(skill_md: Path) -> str:
     return normalize_block(extract_section(text, "Area signal"))
 
 
-def area_prompt_requests_json(prompt: str) -> bool:
-    return bool(str(prompt or "").strip())
-
-
 def truncate_signal_text(text: str, max_chars: int) -> str:
     """Hard-cap free-form LLM signal text without cutting mid-word or leaving an open ``` fence."""
     stripped = str(text or "").strip()
@@ -458,11 +454,7 @@ def json_area_signal_contract(area_payload: dict[str, Any]) -> str:
 
 def build_area_signal_prompt(area_prompt: str, area_payload: dict[str, Any]) -> str:
     """Compose a structured area prompt following GOAL→PROCEDURE→CONTRACT→INPUT hierarchy."""
-    contract = (
-        json_area_signal_contract(area_payload)
-        if area_prompt_requests_json(area_prompt)
-        else "Output requirement:\nReturn only one short phrase."
-    )
+    contract = json_area_signal_contract(area_payload)
     return (
         "GOAL:\n"
         "Return an updated AreaContext JSON object using SIGNAL GUIDANCE and VERIFICATION CHECKS.\n\n"
@@ -491,18 +483,7 @@ def resolve_compass_signal_prompt() -> str:
     return prompt or DEFAULT_COMPASS_PROMPT
 
 
-def load_hermes_config() -> dict[str, Any]:
-    config_path = HOME / ".hermes" / "config.yaml"
-    try:
-        return yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-    except (OSError, yaml.YAMLError) as exc:
-        raise RuntimeError(f"Unable to read Hermes config: {exc}") from exc
-
-
-def read_hermes_config_value(
-    hermes_argv: list[str], key: str, logger: TraceLogger, *, allow_empty: bool = False
-) -> str:
-    del hermes_argv
+def read_hermes_config_value(key: str, logger: TraceLogger, *, allow_empty: bool = False) -> str:
     value: Any = load_hermes_config()
     for part in key.split("."):
         value = value.get(part) if isinstance(value, dict) else None
@@ -514,25 +495,22 @@ def read_hermes_config_value(
 
 
 def resolve_hermes_call_profiles(
-    registry_path: Path | None,
-    hermes_argv: list[str],
     logger: TraceLogger,
     *,
     provider_override: str = "",
     model_override: str = "",
 ) -> dict[str, HermesCallProfile]:
-    del registry_path
     auxiliary_model = model_override.strip() or read_hermes_config_value(
-        hermes_argv, "auxiliary.model", logger, allow_empty=True
+        "auxiliary.model", logger, allow_empty=True
     )
     auxiliary_provider = provider_override.strip() or read_hermes_config_value(
-        hermes_argv, "auxiliary.provider", logger, allow_empty=True
+        "auxiliary.provider", logger, allow_empty=True
     )
     if auxiliary_model.strip().lower() in {"", "auto"}:
-        auxiliary_model = read_hermes_config_value(hermes_argv, "model.default", logger)
+        auxiliary_model = read_hermes_config_value("model.default", logger)
         logger.log("Daily Compass model: inherited Hermes model.default")
     if auxiliary_provider.strip().lower() in {"", "auto"}:
-        auxiliary_provider = read_hermes_config_value(hermes_argv, "model.provider", logger)
+        auxiliary_provider = read_hermes_config_value("model.provider", logger)
         logger.log("Daily Compass provider: inherited Hermes model.provider")
     profiles: dict[str, HermesCallProfile] = {}
     for key, (session_name, toolsets, timeout_seconds, skip_memory) in HERMES_PROFILE_SPECS.items():
@@ -554,10 +532,8 @@ def run_hermes_raw(
     provider: str,
     logger: TraceLogger,
     label: str,
-    session: CompassCallState,
     schema: dict[str, Any] | None = None,
 ) -> tuple[str, float]:
-    del session
     logger.log(
         f"Stateless auxiliary call start: label={label} model={model} provider={provider} "
         f"timeout={HERMES_SIGNAL_TIMEOUT_SECONDS}s schema={'yes' if schema else 'no'}"
@@ -612,10 +588,9 @@ def run_hermes(
     provider: str,
     logger: TraceLogger,
     label: str,
-    session: CompassCallState,
     raw_response_label: str | None = None,
 ) -> str:
-    text, elapsed = run_hermes_raw(prompt, model, provider, logger, label, session)
+    text, elapsed = run_hermes_raw(prompt, model, provider, logger, label)
     log_text_block(logger, raw_response_label or f"Raw response [{label}]", text, elapsed=elapsed)
     obj = parse_json_object(text)
     result = ""
@@ -640,52 +615,47 @@ def run_area_signal_job(
     area_key = task.key
     label = task.label
     area = task.area
-    area_prompt = task.area_prompt
     prompt = task.prompt
     if area_key == "shared-goals":
         return run_shared_goals_signal(task, model, provider, logger, session)
 
-    if area_prompt_requests_json(area_prompt):
-        response_text, elapsed = run_hermes_raw(
-            prompt, model, provider, logger, label, session, schema=AREA_CONTEXT_SCHEMA
+    response_text, elapsed = run_hermes_raw(
+        prompt, model, provider, logger, label, schema=AREA_CONTEXT_SCHEMA
+    )
+    log_text_block(logger, f"Raw area response [{label}]", response_text, elapsed=elapsed)
+    response_payload, reason = validate_json_response_strict(response_text, area_key)
+    second_try_used = False
+    if should_retry_area_signal(reason, response_payload):
+        logger.log(f"Invalid area signal JSON for {label}: {reason}; starting second try")
+        logger.blank_line()
+        logger.log(f"Retrying area signal for {label} due to {reason}")
+        retry_delta = (
+            f"Second try: previous response failed validation with reason '{reason}'. "
+            "Return exactly one JSON object only."
         )
-        log_text_block(logger, f"Raw area response [{label}]", response_text, elapsed=elapsed)
+        log_text_block(logger, f"Retry prompt delta [{label}:second_try]", retry_delta)
+        retry_prompt = f"{prompt}\n\n" + retry_delta
+        response_text, elapsed = run_hermes_raw(
+            retry_prompt, model, provider, logger, f"{label}:second_try", schema=AREA_CONTEXT_SCHEMA
+        )
+        log_text_block(logger, f"Raw area response [{label}:second_try]", response_text, elapsed=elapsed)
         response_payload, reason = validate_json_response_strict(response_text, area_key)
-        second_try_used = False
-        if should_retry_area_signal(reason, response_payload):
-            logger.log(f"Invalid area signal JSON for {label}: {reason}; starting second try")
-            logger.blank_line()
-            logger.log(f"Retrying area signal for {label} due to {reason}")
-            retry_delta = (
-                f"Second try: previous response failed validation with reason '{reason}'. "
-                "Return exactly one JSON object only."
-            )
-            log_text_block(logger, f"Retry prompt delta [{label}:second_try]", retry_delta)
-            retry_prompt = f"{prompt}\n\n" + retry_delta
-            response_text, elapsed = run_hermes_raw(
-                retry_prompt, model, provider, logger, f"{label}:second_try", session, schema=AREA_CONTEXT_SCHEMA
-            )
-            log_text_block(logger, f"Raw area response [{label}:second_try]", response_text, elapsed=elapsed)
-            response_payload, reason = validate_json_response_strict(response_text, area_key)
-            second_try_used = True
-        if not response_payload:
-            logger.log(f"Invalid area signal JSON for {label}; reason={reason}")
-            return SignalJobResult(key=area_key, area=None, reason=reason, ok=False)
-        updated_area = merge_area_signal_response(area, response_payload)
-        if not safe_str_key(updated_area, "ts") and safe_str_key(area, "ts"):
-            updated_area["ts"] = safe_str_key(area, "ts")
-        if second_try_used:
-            append_signal_note(updated_area, "(second try)")
-        if reason == "valid_with_prose":
-            logger.log(f"Accepted JSON for {label} after stripping wrapper prose")
-            append_signal_note(updated_area, "(prose stripped)")
-        log_json_response(logger, f"Processed area JSON [{label}]", pretty_json(serialize_area_for_llm(updated_area)))
-        return SignalJobResult(key=area_key, area=updated_area, reason=reason, ok=True)
-
-    area_signal = run_hermes(prompt, model, provider, logger, label, session, f"Raw area response [{label}]")
-    updated_area = hydrate_boundary_area(area)
-    updated_area["signal"] = area_signal
-    return SignalJobResult(key=area_key, area=updated_area, reason="valid", ok=True)
+        second_try_used = True
+    if not response_payload:
+        logger.log(f"Invalid area signal JSON for {label}; reason={reason}")
+        return SignalJobResult(key=area_key, area=None, reason=reason, ok=False)
+    updated_area = merge_area_signal_response(area, response_payload)
+    if not safe_str_key(updated_area, "ts") and safe_str_key(area, "ts"):
+        updated_area["ts"] = safe_str_key(area, "ts")
+    if second_try_used:
+        append_signal_note(updated_area, "(second try)")
+    if reason == "valid_with_prose":
+        logger.log(f"Accepted JSON for {label} after stripping wrapper prose")
+        append_signal_note(updated_area, "(prose stripped)")
+    log_json_response(
+        logger, f"Processed area JSON [{label}]", pretty_json(serialize_area_for_llm(updated_area))
+    )
+    return SignalJobResult(key=area_key, area=updated_area, reason=reason, ok=True)
 
 
 def run_shared_goals_signal(
@@ -735,7 +705,6 @@ def run_shared_goals_signal(
             provider,
             logger,
             "shared-goals:local-synthesis",
-            session,
             schema=SIGNAL_SCHEMA,
         )
         response_payload = parse_json_object(response_text)
@@ -888,7 +857,7 @@ def enrich_runtime(runtime: CompassContext, logger: TraceLogger, session: Compas
         areas_context.append(serialize_area_for_llm(area))
     prompt = build_compass_signal_prompt(compass_prompt, areas_context)
     runtime["signal"] = run_hermes(
-        prompt, model, provider, logger, "compass", session, "Raw compass response [compass]"
+        prompt, model, provider, logger, "compass", "Raw compass response [compass]"
     )
 
 
@@ -1064,8 +1033,6 @@ def main() -> int:
     logger.log("daily-compass start")
     session = CompassCallState()
     session.call_profiles = resolve_hermes_call_profiles(
-        None,
-        [],
         logger,
         provider_override=args.llm_provider,
         model_override=args.llm_model,

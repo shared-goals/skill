@@ -10,7 +10,18 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from compass.llm import AREA_CONTEXT_SCHEMA, complete, resolve_endpoint
+from compass.llm import AREA_CONTEXT_SCHEMA, Endpoint, complete, open_client, resolve_endpoint
+
+
+def test_open_client_sends_olla_sticky_session_header() -> None:
+    """All compass LLM calls must carry the same Olla sticky-session header
+    so the cluster pins them to one node instead of loading `agent` on every
+    node (large model load/unload is very painful)."""
+    client = open_client(
+        Endpoint(base_url="http://provider.test/v1", api_key="k", model="agent"), timeout=10
+    )
+    headers = client._custom_headers
+    assert headers.get("X-Olla-Session-ID"), "missing X-Olla-Session-ID sticky header"
 
 
 def _response(content: str, finish_reason: str = "stop") -> SimpleNamespace:
@@ -33,7 +44,7 @@ class FakeClient:
         return outcome
 
 
-REQUEST = httpx.Request("POST", "http://tf.test/v1/chat/completions")
+REQUEST = httpx.Request("POST", "http://provider.test/v1/chat/completions")
 
 
 def test_complete_disables_thinking_and_enforces_schema() -> None:
@@ -71,8 +82,8 @@ def test_resolve_endpoint_reads_providers_map(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv("TEST_PROVIDER_KEY", "secret")
     config = {
         "providers": {
-            "thunder-forge": {
-                "api": "http://tf.test:40116/v1/",
+            "example-provider": {
+                "api": "http://provider.test/v1/",
                 "key_env": "TEST_PROVIDER_KEY",
                 "transport": "chat_completions",
                 "default_model": "agent",
@@ -81,11 +92,11 @@ def test_resolve_endpoint_reads_providers_map(monkeypatch: pytest.MonkeyPatch) -
         }
     }
 
-    endpoint = resolve_endpoint(config, "custom:thunder-forge", "")
+    endpoint = resolve_endpoint(config, "custom:example-provider", "")
 
     assert endpoint is not None
     assert (endpoint.base_url, endpoint.api_key, endpoint.model) == (
-        "http://tf.test:40116/v1",
+        "http://provider.test/v1",
         "secret",
         "agent",
     )
@@ -98,28 +109,28 @@ def test_resolve_endpoint_passed_model_wins_over_default(monkeypatch: pytest.Mon
     monkeypatch.setenv("TEST_PROVIDER_KEY", "secret")
     config = {
         "providers": {
-            "thunder-forge": {
-                "api": "http://tf.test:40116/v1",
+            "example-provider": {
+                "api": "http://provider.test/v1",
                 "key_env": "TEST_PROVIDER_KEY",
                 "default_model": "agent",
             }
         }
     }
 
-    endpoint = resolve_endpoint(config, "custom:thunder-forge", "coder")
+    endpoint = resolve_endpoint(config, "custom:example-provider", "coder")
 
     assert endpoint is not None
     assert (endpoint.base_url, endpoint.api_key, endpoint.model) == (
-        "http://tf.test:40116/v1",
+        "http://provider.test/v1",
         "secret",
         "coder",
     )
 
 
 def test_resolve_endpoint_missing_key_env_yields_empty_api_key() -> None:
-    config = {"providers": {"tf": {"api": "http://tf.test/v1", "key_env": "TF_MISSING_KEY", "default_model": "agent"}}}
+    config = {"providers": {"tf": {"api": "http://provider.test/v1", "key_env": "TF_MISSING_KEY", "default_model": "agent"}}}
 
     endpoint = resolve_endpoint(config, "custom:tf", "")
 
     assert endpoint is not None
-    assert (endpoint.base_url, endpoint.api_key, endpoint.model) == ("http://tf.test/v1", "", "agent")
+    assert (endpoint.base_url, endpoint.api_key, endpoint.model) == ("http://provider.test/v1", "", "agent")

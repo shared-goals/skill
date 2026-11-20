@@ -15,8 +15,11 @@ from pathlib import Path
 
 MAX_SAFE_MESSAGE_UNITS = 3500
 TRUNCATION_MARKER = "\n\n… (truncated)"
-SEND_INTERVAL_SECONDS = 1.1
-SEND_TIMEOUT_SECONDS = 120
+# ~3s pacing stays under Telegram's ~1 msg/s flood envelope for big bodies:
+# at 1.1s the 11th consecutive message draws a RetryAfter penalty and the
+# send stalls. SEND_TIMEOUT must cover a residual flood wait plus one send.
+SEND_INTERVAL_SECONDS = 3.0
+SEND_TIMEOUT_SECONDS = 300
 
 
 def hermes_executable() -> str:

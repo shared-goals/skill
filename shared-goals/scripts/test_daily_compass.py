@@ -12,6 +12,12 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+try:
+    import agent.auxiliary_client  # noqa: F401  (hermes-agent package)
+    _HAS_AGENT = True
+except ImportError:  # hermes-agent not on path
+    _HAS_AGENT = False
 from unittest import mock
 
 MODULE_PATH = Path(__file__).parent / "daily-compass.py"
@@ -88,7 +94,6 @@ class DailyCompassPureTests(unittest.TestCase):
             provider: str,
             _logger: object,
             label: str,
-            _session: object,
             schema: dict[str, object] | None = None,
         ) -> tuple[str, float]:
             calls.append(
@@ -295,7 +300,7 @@ class DailyCompassPureTests(unittest.TestCase):
         contract = module.json_area_signal_contract({"signal_max_chars": 2000})
         self.assertIn("LineContext `signal` is not more than 2000 chars.", contract)
 
-    def test_enrich_runtime_runs_area_batch_before_compass_with_shared_session(self) -> None:
+    def test_enrich_runtime_runs_area_batch_before_compass(self) -> None:
         runtime = {
             "signal_prompt": "Compass prompt",
             "signal": "",
@@ -321,8 +326,8 @@ class DailyCompassPureTests(unittest.TestCase):
             calls.append(("batch", passed_session))
             rt["areas"][0]["signal"] = "area-done"
 
-        def fake_run_hermes(_prompt, _model, _provider, _logger, label, passed_session, _raw_label=None):
-            calls.append((label, passed_session))
+        def fake_run_hermes(_prompt, _model, _provider, _logger, label, _raw_label=None):
+            calls.append((label, _raw_label))
             return "compass-done"
 
         try:
@@ -337,7 +342,7 @@ class DailyCompassPureTests(unittest.TestCase):
 
         self.assertEqual([c[0] for c in calls], ["batch", "compass"])
         self.assertIs(calls[0][1], session)
-        self.assertIs(calls[1][1], session)
+        self.assertEqual(calls[1][1], "Raw compass response [compass]")
         self.assertEqual(runtime["areas"][0]["signal"], "area-done")
         self.assertEqual(runtime["signal"], "compass-done")
 
@@ -1043,33 +1048,31 @@ Ignore.
 
     def test_sanitize_strips_chat_banner_lines_before_payload(self) -> None:
         raw = (
-            '↪ restored workspace dir: /Users/shag/.hermes/scripts\nWarning: Unknown toolsets: messaging\n{"area": {}}'
+            '↪ restored workspace dir: /Users/example/.hermes/scripts\nWarning: Unknown toolsets: messaging\n{"area": {}}'
         )
         self.assertEqual(shared.sanitize_hermes_output(raw), '{"area": {}}')
 
     def test_call_profiles_default_to_general_auxiliary_model(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            state_path = Path(tmp_dir) / "state.json"
-            values = {
-                "auxiliary.model": "aux-model",
-                "auxiliary.provider": "aux-provider",
-            }
-            logger = module.TraceLogger(verbose=False)
-            try:
-                with mock.patch.object(
-                    module,
-                    "read_hermes_config_value",
-                    side_effect=lambda _argv, key, _logger, **_kwargs: values[key],
-                ) as read_config:
-                    profiles = module.resolve_hermes_call_profiles(state_path, ["hermes"], logger)
-            finally:
-                if hasattr(logger, "_fh") and not logger._fh.closed:
-                    logger._fh.close()
+        values = {
+            "auxiliary.model": "aux-model",
+            "auxiliary.provider": "aux-provider",
+        }
+        logger = module.TraceLogger(verbose=False)
+        try:
+            with mock.patch.object(
+                module,
+                "read_hermes_config_value",
+                side_effect=lambda key, _logger, **_kwargs: values[key],
+            ) as read_config:
+                profiles = module.resolve_hermes_call_profiles(logger)
+        finally:
+            if hasattr(logger, "_fh") and not logger._fh.closed:
+                logger._fh.close()
 
-            self.assertEqual(read_config.call_count, 2)
-            self.assertEqual(set(profiles), {"orchestration"})
-            self.assertEqual(profiles["orchestration"].model, "aux-model")
-            self.assertEqual(profiles["orchestration"].provider, "aux-provider")
+        self.assertEqual(read_config.call_count, 2)
+        self.assertEqual(set(profiles), {"orchestration"})
+        self.assertEqual(profiles["orchestration"].model, "aux-model")
+        self.assertEqual(profiles["orchestration"].provider, "aux-provider")
 
     def test_call_profiles_inherit_main_model_when_auxiliary_is_auto(self) -> None:
         values = {
@@ -1083,9 +1086,9 @@ Ignore.
             with mock.patch.object(
                 module,
                 "read_hermes_config_value",
-                side_effect=lambda _argv, key, _logger, **_kwargs: values[key],
+                side_effect=lambda key, _logger, **_kwargs: values[key],
             ):
-                profiles = module.resolve_hermes_call_profiles(None, ["hermes"], logger)
+                profiles = module.resolve_hermes_call_profiles(logger)
         finally:
             if hasattr(logger, "_fh") and not logger._fh.closed:
                 logger._fh.close()
@@ -1099,8 +1102,6 @@ Ignore.
         try:
             with mock.patch.object(module, "read_hermes_config_value") as read_config:
                 profiles = module.resolve_hermes_call_profiles(
-                    None,
-                    [],
                     logger,
                     provider_override="cli-provider",
                     model_override="cli-model",
@@ -1113,6 +1114,7 @@ Ignore.
         self.assertEqual(profiles["orchestration"].model, "cli-model")
         self.assertEqual(profiles["orchestration"].provider, "cli-provider")
 
+    @unittest.skipUnless(_HAS_AGENT, "hermes-agent package not on path")
     def test_run_hermes_raw_uses_stateless_auxiliary_call(self) -> None:
         logger = module.TraceLogger(verbose=False)
         session = module.CompassCallState()
@@ -1125,7 +1127,7 @@ Ignore.
         try:
             with mock.patch("agent.auxiliary_client.call_llm", side_effect=fake_call_llm):
                 text, elapsed = module.run_hermes_raw(
-                    "prompt", "test-model", "test-provider", logger, "area:news", session
+                    "prompt", "test-model", "test-provider", logger, "area:news"
                 )
         finally:
             if hasattr(logger, "_fh") and not logger._fh.closed:
@@ -1139,6 +1141,7 @@ Ignore.
         self.assertEqual(calls[0]["messages"], [{"role": "user", "content": "prompt"}])
         self.assertEqual(calls[0]["max_tokens"], module.DEFAULT_MAX_TOKENS)
 
+    @unittest.skipUnless(_HAS_AGENT, "hermes-agent package not on path")
     def test_run_hermes_raw_forwards_json_schema_to_hermes_client(self) -> None:
         logger = module.TraceLogger(verbose=False)
         session = module.CompassCallState()
@@ -1152,7 +1155,7 @@ Ignore.
         try:
             with mock.patch("agent.auxiliary_client.call_llm", side_effect=fake_call_llm):
                 text, _elapsed = module.run_hermes_raw(
-                    "prompt", "test-model", "test-provider", logger, "shared-goals", session, schema=schema
+                    "prompt", "test-model", "test-provider", logger, "shared-goals", schema=schema
                 )
         finally:
             if hasattr(logger, "_fh") and not logger._fh.closed:

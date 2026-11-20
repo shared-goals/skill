@@ -18,7 +18,6 @@ from pathlib import Path
 from urllib.error import URLError
 
 import pytest
-import yaml
 from pydantic import ValidationError
 
 SCRIPTS_DIR = Path(__file__).parent
@@ -27,8 +26,6 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import shared_goals_platform as platform
-from compass.collect import run_boundary
-from compass.config import build_skill_index
 from compass.models import BoundaryPayload
 
 
@@ -110,26 +107,7 @@ def test_boundary_payload_contract_rejects_invalid(reason: str) -> None:
         BoundaryPayload.model_validate(payload)
 
 
-def _active_area_scripts() -> list[tuple[str, Path]]:
-    skill_index = build_skill_index(compass.HERMES_SKILLS_DIR)
-    out: list[tuple[str, Path]] = []
-    for path in sorted(compass.AREAS_DIR.glob("*.yaml")):
-        cfg = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        # shag runs a git-sync preflight; not safe for a test run.
-        if cfg.get("status") != "active" or path.stem == "shag":
-            continue
-        skill_dir = skill_index.get(str(cfg.get("skill", "")))
-        if skill_dir:
-            out.append((path.stem, skill_dir / "scripts" / f"daily-{path.stem}-status.py"))
-    return out
-
-
-@pytest.mark.live
-@pytest.mark.parametrize(("key", "script"), _active_area_scripts())
-def test_live_boundary_script_output_matches_contract(key: str, script: Path) -> None:
-    assert script.exists(), f"{key}: missing {script}"
-    run_boundary(script)
-
+# Real boundary-script checks live in test_boundary_conformance.py.
 
 # T-RANK ----------------------------------------------------------------------
 

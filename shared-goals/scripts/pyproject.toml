@@ -1,0 +1,15 @@
+# Runtime dependencies for the shared-goals scripts (daily-compass and friends).
+# Run them with: uv run --project <this dir> python <script>.py
+# uv manages the environment itself — nothing to maintain by hand.
+[project]
+name = "shared-goals-scripts"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+  "pydantic",
+  "httpx[socks]",
+  "openai",
+  "pyyaml",
+  "jinja2",
+  "pytest",
+]

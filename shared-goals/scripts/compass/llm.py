@@ -68,9 +68,19 @@ def resolve_endpoint(config: Mapping[str, Any], provider: str, model: str) -> En
     )
 
 
+OLLA_STICKY_SESSION_HEADER = "X-Olla-Session-ID"
+# One stable sticky key for every compass LLM call: Olla pins the session to a
+# single node, so consecutive requests can reuse a loaded model.
+OLLA_STICKY_SESSION_VALUE = "daily-compass"
+
+
 def open_client(endpoint: Endpoint, *, timeout: float) -> Any:
     return openai.OpenAI(
-        base_url=endpoint.base_url, api_key=endpoint.api_key or "no-key", max_retries=0, timeout=timeout
+        base_url=endpoint.base_url,
+        api_key=endpoint.api_key or "no-key",
+        max_retries=0,
+        timeout=timeout,
+        default_headers={OLLA_STICKY_SESSION_HEADER: OLLA_STICKY_SESSION_VALUE},
     )
 
 

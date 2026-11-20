@@ -30,6 +30,10 @@ def _load_module(module_name: str, path: Path):
     return module
 
 
+# The optional hook is installed separately from the public skill.
+if not HOOK_PATH.is_file():
+    raise unittest.SkipTest(f"hook not present on this host: {HOOK_PATH}")
+
 mod = _load_module("hindsight_ingest_completion_hook_det", HOOK_PATH)
 
 

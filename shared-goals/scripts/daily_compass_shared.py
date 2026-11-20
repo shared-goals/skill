@@ -7,6 +7,7 @@ import json
 import os
 import re
 import subprocess
+import yaml
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -65,11 +66,65 @@ COMMON_JSON_CONTRACT_PHRASES = [
 SCRIPT_DIR = Path(__file__).resolve().parent
 SHARED_GOALS_DIR = SCRIPT_DIR.parent
 CUSTOM_SKILLS_DIR = SHARED_GOALS_DIR.parents[1]
+HERMES_CONFIG = Path.home() / ".hermes" / "config.yaml"
 HERMES_SKILLS_DIR = Path.home() / ".hermes" / "skills"
 SHARED_GOALS_LOGS_DIR = SHARED_GOALS_DIR / "logs"
 SHARED_GOALS_STATE_DIR = SHARED_GOALS_DIR / "state"
 COMPASS_CONTEXT_STATE_FILE = SHARED_GOALS_STATE_DIR / "daily-compass-context.json"
 NEXT_STEPS_MAX_ITEMS = 5
+
+
+def get_hermes_python() -> str | None:
+    """Command string whose python can import hermes_cli / hermes_state.
+
+    hermes-agent is a uv project (no venv/); resolve via uv run in its
+    directory. Single owner of this resolution — see sg-area-craft pitfall
+    "hermes-agent is a uv project, not a venv". Returns None when hermes-agent
+    or uv cannot be found.
+    """
+    import shutil
+
+    hermes_agent = Path.home() / ".hermes" / "hermes-agent"
+    if not (hermes_agent / "pyproject.toml").exists():
+        return None
+    uv = shutil.which("uv")
+    if not uv:
+        tools = sorted(Path.home().glob(".hermes/tools/uv-*/uv"))
+        if not tools:
+            return None
+        uv = str(tools[-1])
+    return f"{uv} --directory {hermes_agent} run python"
+
+
+def run_hermes_python(code: str, timeout: int = 30) -> tuple[int, str, str] | None:
+    """Run python code with the hermes-agent interpreter.
+
+    Returns (returncode, stdout, stderr), or None when the hermes python is
+    unavailable — callers degrade gracefully on None.
+    """
+    import shlex
+
+    cmd = get_hermes_python()
+    if not cmd:
+        return None
+    try:
+        proc = subprocess.run(
+            shlex.split(cmd) + ["-c", code],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return 124, "", f"hermes python timed out after {timeout}s"
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def load_hermes_config() -> dict[str, Any]:
+    """Single reader of ~/.hermes/config.yaml for compass runtime and area scripts."""
+    try:
+        return yaml.safe_load(HERMES_CONFIG.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        raise RuntimeError(f"Unable to read Hermes config: {exc}") from exc
 
 
 def load_env_file(env_path: Path | None = None) -> None:

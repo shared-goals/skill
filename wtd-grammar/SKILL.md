@@ -65,18 +65,11 @@ env -u VIRTUAL_ENV uv run --project ../text-forge python \
 
 `--scope wtd` = `text/p1-*.md` + `text/p2-*.md` + `text/index.md`; `--scope all` захватывает `text/**/*.md`, включая книжки. Без `--since` берётся рабочее дерево против HEAD. Коды выхода: `0` — ок, `1` — ref не разрешился, `2` — добавленных строк нет.
 
-Результат — `build/grammar-input.md` со строками вида `text/p2-110-system.md:31 | …`: этот файл и идёт в вычитку. Если инструмента под рукой нет, справка в `scripts/`:
-
-```bash
-python3 <skill>/scripts/added_lines.py <base-ref> -- text/p1-*.md text/p2-*.md text/index.md
-python3 <skill>/scripts/scan_typography.py build/added_lines.json
-```
-
-Даёт `build/added_lines.json`: `{файл: [[номер_строки_постинга, текст], ...]}`.
+Результат — `build/grammar-input.md` со строками вида `text/p2-110-system.md:31 | …`: этот файл и идёт в вычитку.
 
 ### 2. Машинный проход по типографике
 
-Двойные пробелы, пробел перед знаком, латиница внутри русских слов. Дешевле, чем глазами, и модель такое часто «не видит».
+Двойные пробелы, пробел перед знаком, латиница внутри русских слов. Дешевле, чем глазами, и модель такое часто «не видит». Этот проход уже внутри `grammar-diff --typo` (секция `## Typography` во входе) — отдельного скрипта не держим.
 
 ### 3. Читать прозу по классам
 
@@ -154,5 +147,4 @@ python3 <skill>/scripts/check_report_addresses.py build/grammar-report.md "$PWD"
 - `references/orfogrammka-rule-catalog.md` — навигация по каталогу правил, проверенные URL по классам, рецепт выгрузки.
 - `scripts/scrape_rules.py` — выгрузка полного индекса правил (679 записей) в JSON.
 - `scripts/check_report_addresses.py` — сверка отчёта с диском: адреса `файл:строка` и цитаты (с нормализацией ссылок).
-- `scripts/added_lines.py` — дифф → `{файл: [[строка, текст]]}` (справка до переезда в text-forge).
-- `scripts/scan_typography.py` — машинный проход по типографике.
+

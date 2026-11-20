@@ -19,7 +19,7 @@ import os
 import re
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from time import monotonic
@@ -55,7 +55,6 @@ from daily_compass_shared import (
     AreaContext,
     BoundaryAreaContext,
     CompassContext,
-    HermesCallProfile,
     area_context_definition_text,
     build_numbered_lines,
     extract_section,
@@ -83,10 +82,6 @@ SHARED_GOALS_SKILL = SHARED_GOALS_DIR / "SKILL.md"
 AREAS_DIR = SHARED_GOALS_DIR / "references"
 TEMPLATE_FILE = SHARED_GOALS_DIR / "templates" / "daily-output.md"
 LOGS_DIR = SHARED_GOALS_DIR / "logs"
-
-HERMES_PROFILE_SPECS = {
-    "orchestration": ("Daily Compass", (), HERMES_SIGNAL_TIMEOUT_SECONDS, True),
-}
 
 DEFAULT_DIMENSIONS = ["faith", "will", "feeling", "mind"]
 VALID_DIMENSIONS = set(DEFAULT_DIMENSIONS)
@@ -134,7 +129,8 @@ class AreaSignalExecutionContext:
 
 @dataclass
 class CompassCallState:
-    call_profiles: dict[str, HermesCallProfile] = field(default_factory=dict)
+    model: str = ""
+    provider: str = ""
 
 
 def prune_expired_logs(logs_dir: Path) -> None:
@@ -494,12 +490,13 @@ def read_hermes_config_value(key: str, logger: TraceLogger, *, allow_empty: bool
     return value
 
 
-def resolve_hermes_call_profiles(
+def resolve_model(
     logger: TraceLogger,
     *,
     provider_override: str = "",
     model_override: str = "",
-) -> dict[str, HermesCallProfile]:
+) -> tuple[str, str]:
+    """Return the (model, provider) pair used for the stateless auxiliary calls."""
     auxiliary_model = model_override.strip() or read_hermes_config_value(
         "auxiliary.model", logger, allow_empty=True
     )
@@ -512,18 +509,7 @@ def resolve_hermes_call_profiles(
     if auxiliary_provider.strip().lower() in {"", "auto"}:
         auxiliary_provider = read_hermes_config_value("model.provider", logger)
         logger.log("Daily Compass provider: inherited Hermes model.provider")
-    profiles: dict[str, HermesCallProfile] = {}
-    for key, (session_name, toolsets, timeout_seconds, skip_memory) in HERMES_PROFILE_SPECS.items():
-        profiles[key] = HermesCallProfile(
-            key=key,
-            session_name=session_name,
-            model=auxiliary_model,
-            provider=auxiliary_provider,
-            toolsets=toolsets,
-            timeout_seconds=timeout_seconds,
-            skip_memory=skip_memory,
-        )
-    return profiles
+    return auxiliary_model, auxiliary_provider
 
 
 def run_hermes_raw(
@@ -846,8 +832,7 @@ def append_signal_note(area: BoundaryAreaContext, note: str) -> None:
 
 
 def enrich_runtime(runtime: CompassContext, logger: TraceLogger, session: CompassCallState) -> None:
-    profile = session.call_profiles["orchestration"]
-    model, provider = profile.model, profile.provider
+    model, provider = session.model, session.provider
     logger.log("Phase 3: stateless model calls")
     run_area_signal_batch(runtime, logger, model, provider, session)
 
@@ -1031,12 +1016,12 @@ def main() -> int:
         sys.stdout = TeeStream(orig_stdout, logger)
         sys.stderr = TeeStream(orig_stderr, logger)
     logger.log("daily-compass start")
-    session = CompassCallState()
-    session.call_profiles = resolve_hermes_call_profiles(
+    model, provider = resolve_model(
         logger,
         provider_override=args.llm_provider,
         model_override=args.llm_model,
     )
+    session = CompassCallState(model=model, provider=provider)
     logger.log("Daily Compass stateless auxiliary calls ready")
 
     def log_phase(title: str) -> None:

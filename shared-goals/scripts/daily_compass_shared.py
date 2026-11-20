@@ -8,7 +8,6 @@ import os
 import re
 import subprocess
 import yaml
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol, TypedDict
@@ -71,7 +70,6 @@ HERMES_SKILLS_DIR = Path.home() / ".hermes" / "skills"
 SHARED_GOALS_LOGS_DIR = SHARED_GOALS_DIR / "logs"
 SHARED_GOALS_STATE_DIR = SHARED_GOALS_DIR / "state"
 COMPASS_CONTEXT_STATE_FILE = SHARED_GOALS_STATE_DIR / "daily-compass-context.json"
-NEXT_STEPS_MAX_ITEMS = 5
 
 
 def get_hermes_python() -> str | None:
@@ -192,6 +190,10 @@ def append_area_log_line(area_key: str, message: str, level: str = "INFO", run_i
 def now_iso_utc() -> str:
     """Return current UTC timestamp in ISO-8601 format."""
     return datetime.now(timezone.utc).isoformat()
+
+
+class LoggerLike(Protocol):
+    def log(self, msg: str) -> None: ...
 
 
 def save_json_snapshot(path: Path, payload: dict[str, Any], logger: LoggerLike | None = None) -> None:
@@ -404,57 +406,6 @@ def area_context_definition_text() -> str:
         "LineContext = { title: string, url: string, body: string, signal: string }\n\n"
         "AreaContext definition:\n"
         "AreaContext = { name: string, key: string, dimension: string, signal: string, lines: LineContext[] }\n"
-    )
-
-
-@dataclass
-class SubprocessTextResult:
-    returncode: int
-    stdout: str
-    stderr: str
-    timed_out: bool = False
-    launch_error: bool = False
-
-
-class LoggerLike(Protocol):
-    def log(self, msg: str) -> None: ...
-
-
-@dataclass(frozen=True)
-class HermesCallProfile:
-    key: str
-    session_name: str
-    model: str
-    provider: str
-    toolsets: tuple[str, ...]
-    timeout_seconds: int
-    oneshot: bool = False
-    skip_memory: bool = False
-
-
-def run_subprocess_text(argv: list[str], *, timeout: int, env: dict[str, str] | None = None) -> SubprocessTextResult:
-    """Run a subprocess and return normalized text outputs and status."""
-    try:
-        proc = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=env,
-        )
-    except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout.decode(errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
-        stderr = exc.stderr.decode(errors="replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
-        return SubprocessTextResult(returncode=124, stdout=stdout, stderr=stderr, timed_out=True, launch_error=False)
-    except OSError as exc:
-        return SubprocessTextResult(returncode=127, stdout="", stderr=str(exc), timed_out=False, launch_error=True)
-
-    return SubprocessTextResult(
-        returncode=proc.returncode,
-        stdout=proc.stdout or "",
-        stderr=proc.stderr or "",
-        timed_out=False,
-        launch_error=False,
     )
 
 

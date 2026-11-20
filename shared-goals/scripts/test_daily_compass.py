@@ -49,18 +49,6 @@ compass_update_spec.loader.exec_module(compass_update_module)  # type: ignore[at
 
 
 class DailyCompassPureTests(unittest.TestCase):
-    def make_profiles(self, model: str = "test-model", provider: str = "test-provider") -> dict[str, object]:
-        return {
-            "orchestration": shared.HermesCallProfile(
-                key="orchestration",
-                session_name="Daily Compass",
-                model=model,
-                provider=provider,
-                toolsets=(),
-                timeout_seconds=shared.HERMES_SIGNAL_TIMEOUT_SECONDS,
-                skip_memory=True,
-            ),
-        }
 
     def test_trace_logger_removes_logs_older_than_seven_days(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -319,7 +307,7 @@ class DailyCompassPureTests(unittest.TestCase):
             "area_meta": {"news": {"area_prompt": "Signal news."}},
         }
         logger = module.TraceLogger(verbose=False)
-        session = module.CompassCallState(call_profiles=self.make_profiles())
+        session = module.CompassCallState(model="test-model", provider="test-provider")
         calls: list[tuple[str, object]] = []
 
         def fake_batch(rt, _logger, _model, _provider, passed_session):
@@ -1052,7 +1040,7 @@ Ignore.
         )
         self.assertEqual(shared.sanitize_hermes_output(raw), '{"area": {}}')
 
-    def test_call_profiles_default_to_general_auxiliary_model(self) -> None:
+    def test_model_defaults_to_general_auxiliary_model(self) -> None:
         values = {
             "auxiliary.model": "aux-model",
             "auxiliary.provider": "aux-provider",
@@ -1064,17 +1052,16 @@ Ignore.
                 "read_hermes_config_value",
                 side_effect=lambda key, _logger, **_kwargs: values[key],
             ) as read_config:
-                profiles = module.resolve_hermes_call_profiles(logger)
+                model, provider = module.resolve_model(logger)
         finally:
             if hasattr(logger, "_fh") and not logger._fh.closed:
                 logger._fh.close()
 
         self.assertEqual(read_config.call_count, 2)
-        self.assertEqual(set(profiles), {"orchestration"})
-        self.assertEqual(profiles["orchestration"].model, "aux-model")
-        self.assertEqual(profiles["orchestration"].provider, "aux-provider")
+        self.assertEqual(model, "aux-model")
+        self.assertEqual(provider, "aux-provider")
 
-    def test_call_profiles_inherit_main_model_when_auxiliary_is_auto(self) -> None:
+    def test_model_inherits_main_model_when_auxiliary_is_auto(self) -> None:
         values = {
             "auxiliary.model": "auto",
             "auxiliary.provider": "auto",
@@ -1088,20 +1075,19 @@ Ignore.
                 "read_hermes_config_value",
                 side_effect=lambda key, _logger, **_kwargs: values[key],
             ):
-                profiles = module.resolve_hermes_call_profiles(logger)
+                model, provider = module.resolve_model(logger)
         finally:
             if hasattr(logger, "_fh") and not logger._fh.closed:
                 logger._fh.close()
 
-        self.assertEqual(profiles["orchestration"].model, "default-model")
-        self.assertEqual(profiles["orchestration"].provider, "default-provider")
-        self.assertEqual(set(profiles), {"orchestration"})
+        self.assertEqual(model, "default-model")
+        self.assertEqual(provider, "default-provider")
 
-    def test_call_profiles_accept_cli_provider_and_model_overrides(self) -> None:
+    def test_model_accepts_cli_provider_and_model_overrides(self) -> None:
         logger = module.TraceLogger(verbose=False)
         try:
             with mock.patch.object(module, "read_hermes_config_value") as read_config:
-                profiles = module.resolve_hermes_call_profiles(
+                model, provider = module.resolve_model(
                     logger,
                     provider_override="cli-provider",
                     model_override="cli-model",
@@ -1111,13 +1097,12 @@ Ignore.
                 logger._fh.close()
 
         read_config.assert_not_called()
-        self.assertEqual(profiles["orchestration"].model, "cli-model")
-        self.assertEqual(profiles["orchestration"].provider, "cli-provider")
+        self.assertEqual(model, "cli-model")
+        self.assertEqual(provider, "cli-provider")
 
     @unittest.skipUnless(_HAS_AGENT, "hermes-agent package not on path")
     def test_run_hermes_raw_uses_stateless_auxiliary_call(self) -> None:
         logger = module.TraceLogger(verbose=False)
-        session = module.CompassCallState()
         calls: list[dict[str, object]] = []
 
         def fake_call_llm(**kwargs: object) -> str:
@@ -1144,7 +1129,6 @@ Ignore.
     @unittest.skipUnless(_HAS_AGENT, "hermes-agent package not on path")
     def test_run_hermes_raw_forwards_json_schema_to_hermes_client(self) -> None:
         logger = module.TraceLogger(verbose=False)
-        session = module.CompassCallState()
         schema = {"type": "object", "properties": {"signal": {"type": "string"}}}
         calls: list[dict[str, object]] = []
 

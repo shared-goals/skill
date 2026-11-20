@@ -106,6 +106,10 @@ Hunger-first principle: the dimension least fed recently gets attention first.
 Daily Compass uses area status payloads to project the day across dimensions.
 When the platform supplies `dimension_order`, Compass uses it; otherwise it uses the fallback order. Local areas can report `[TBD]` when they have no data.
 
+The invariants the implementation must keep — immutable evidence, read-only
+memory, stateless model calls, platform-owned hunger order — are recorded in
+[docs/daily-compass-design.md](shared-goals/docs/daily-compass-design.md).
+
 ### Updating Compass.md
 
 `compass-update.py` is the connector implementation for updating a local

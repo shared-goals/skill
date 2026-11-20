@@ -289,17 +289,25 @@ interactive runs prompt).
 
 When a boundary script cannot fetch data (IMAP timeout, missing credentials, API error), put the **raw error message** in LineContext `body`. Do not wrap it in "Error is Ok: ..." or similar softening — the LLM signal step and the user need to see what actually failed.
 
-## Hermes calls from Daily Compass
+## LLM calls from Daily Compass
 
-Use the centralized `run_hermes_call` executor and a stable `HermesCallProfile` for LLM-powered work. The profile owns model, provider, toolsets, timeout, and named-session identity.
+Compass model calls are stateless chat completions in `compass/llm.py` against the
+configured provider; they open no Hermes session and no memory provider, so a run
+cannot write memory as a side effect. Only `model` and `provider` are resolved
+(`resolve_model()` in `daily-compass.py`) and carried on `CompassCallState`.
 
 - Use `BOUNDARY_SCRIPT_TIMEOUT_SECONDS` for boundary processes.
 - Use `HERMES_SIGNAL_TIMEOUT_SECONDS` for ordinary area and compass synthesis.
-- Use `HERMES_REFLECT_TIMEOUT_SECONDS` for Hindsight reflection; it must exceed the configured Hindsight client timeout.
-- Parse Hermes stdout for JSON via `parse_json_object` when the call contract requires JSON.
+- Parse the response for JSON via `parse_json_object` when the call contract requires JSON.
 - On timeout or error, return a LineContext with the raw error message in `body` and empty `signal`.
-- **Never build Hermes argv directly in an area.** `run_hermes_call` is the single owner of invocation, named-session persistence, retry classification, and lifecycle logging.
-- Keep toolsets stable for a named session. A model, provider, or toolset policy change rotates only that session.
+- **Never build a client, argv, or provider lookup in an area.** Provider resolution
+  lives in `compass/llm.py`; a second reader of the config schema breaks on the next
+  Hermes migration while the first one keeps working.
+- Memory access is recall-only (`compass/memory.py`); a recommendation is not a fact
+  and must never be retained.
+- Delivery is the one place a Hermes CLI subprocess is legitimate (`compass/deliver.py`
+  calls `hermes send`). Do not conclude "no Hermes subprocess anywhere" from the
+  stateless model path — check both.
 
 ## Guardrails
 
@@ -465,9 +473,20 @@ or `compass/*`:
    conformance suite bind to the hand-rolled one — unification is churn until
    one of them actually fails.
 6. A fallback branch that passes a failed dependency into the success path is
-dead code, not resilience: if the dependency is known-broken, the first call
-inside re-raises and the outer handler wins. Delete the branch instead of
-shipping an unreachable payload (and its off-contract `status` value).
+   dead code, not resilience: if the dependency is known-broken, the first call
+   inside re-raises and the outer handler wins. Delete the branch instead of
+   shipping an unreachable payload (and its off-contract `status` value).
+7. Do not trust an automated dead-symbol scan. `from __future__ import
+   annotations` turns annotation-only references into strings, so an AST scan that
+   counts `Name` nodes reports live functions as dead; hand-written types and
+   `getattr` dispatch hide others. Confirm each candidate by occurrence count over
+   the tree (`grep -rho "\bNAME\b" scripts/ areas/ | wc -l`): a count equal to the
+   number of definitions means no caller, anything higher means live. Deleting on
+   a scanner's verdict removes working code.
+8. After deleting a layer, grep for the symbols it owned and run a lint pass
+   filtered to `F` (unused imports, unused locals). The residue of a deletion is
+   not only the deleted code: it is the import, the fixture field, and the test
+   local that existed only to feed it.
 
 ## Stop conditions
 

@@ -14,10 +14,13 @@ from pathlib import Path
 
 from daily_compass_shared import load_json_snapshot, render_next_steps_from_compass_snapshot
 from shared_goals_platform import (
+    QUICK_TASKS_HEADING,
     commit_source_ref,
     create_commit,
+    detect_user_added_steps,
     fetch_active_contracts,
     fetch_platform_shared_goals,
+    move_lines_to_quick_tasks,
     parse_completed_goals_from_compass_text,
     update_compass_markdown,
 )
@@ -144,7 +147,74 @@ def _prompt_commit_field_preview(
     return done, next_step
 
 
-def _sync_completed_tasks(console: Console | None, path: Path) -> int:
+def _print_note(console: Console | None, message: str, style: str = "yellow") -> None:
+    if console:
+        console.print(f"[{style}]{message}[/{style}]")
+    else:
+        print(message)
+
+
+def _apply_move_list(
+    console: Console | None,
+    path: Path,
+    text: str,
+    move_list: list[str],
+) -> None:
+    """Persist declined/leftover lines under ## Quick Tasks (no data loss)."""
+    if not move_list:
+        return
+    updated = move_lines_to_quick_tasks(text, move_list)
+    if updated == text:
+        _print_note(console, f"'## {QUICK_TASKS_HEADING}' already holds: " + "; ".join(move_list))
+        return
+    try:
+        path.write_text(updated, encoding="utf-8")
+    except OSError:
+        _print_note(console, f"Could not write moved lines to {path}.")
+        return
+    _print_note(console, f"Moved to '## {QUICK_TASKS_HEADING}': " + "; ".join(move_list))
+
+
+def _sync_planning_only_goal(
+    console: Console | None,
+    *,
+    goal: dict,
+    contract: dict,
+    user_lines: list[str],
+    move_list: list[str],
+) -> int:
+    """Offer user-added lines of a planning-only goal as a planning commit.
+
+    Returns the number of created commits; declined lines go to `move_list`.
+    """
+    goal_id = str(goal["goal_id"])
+    title = str(goal["goal_title"])
+    prompt = f"Add {len(user_lines)} line(s) to '{title}' next steps?"
+    if not _prompt_yes_no(console, prompt, default=True):
+        # Lines are already in move_list (pre-seeded): declined means they move
+        # to ## Quick Tasks — do NOT extend again (would duplicate them).
+        _print_note(console, f"Declined: moved {len(user_lines)} line(s) from '{title}' to '## {QUICK_TASKS_HEADING}'.")
+        return 0
+
+    incomplete = list(goal["incomplete"]) + [line for line in user_lines if line not in goal["incomplete"]]
+    create_commit(
+        str(contract.get("contract_id", "")).strip(),
+        done=None,
+        next_step="\n".join(incomplete) or None,
+        time_minutes=None,
+        happy_moment=None,
+        source_ref=commit_source_ref(goal_id, [], incomplete),
+    )
+    # Accepted: the lines now live on the platform as next steps — remove them
+    # from the pending move list so they do not also land in ## Quick Tasks.
+    for line in user_lines:
+        if line in move_list:
+            move_list.remove(line)
+    _print_note(console, f"Planning commit for '{title}' with {len(incomplete)} next step(s).", style="green")
+    return 1
+
+
+def _sync_completed_tasks(console: Console | None, path: Path, payload: dict) -> int:
     if not path.exists():
         return 0
 
@@ -155,6 +225,15 @@ def _sync_completed_tasks(console: Console | None, path: Path) -> int:
 
     goals = parse_completed_goals_from_compass_text(text)
     if not goals:
+        return 0
+
+    user_added = detect_user_added_steps(goals, payload)
+    move_list = [line for goal in goals if not goal["completed"] for line in user_added.get(str(goal["goal_id"]), [])]
+
+    # Mirror the existing non-interactive guard: no prompts at all; lines that
+    # could only be planned move to ## Quick Tasks instead.
+    if not sys.stdin.isatty():
+        _apply_move_list(console, path, text, move_list)
         return 0
 
     contracts = fetch_active_contracts()
@@ -170,6 +249,20 @@ def _sync_completed_tasks(console: Console | None, path: Path) -> int:
                 print(message)
             continue
 
+        if not goal["completed"]:
+            # Planning-only goal: nothing was completed, so the only thing to
+            # offer is a next_step-only planning commit for user-added lines.
+            lines = user_added.get(goal_id, [])
+            if lines:
+                created += _sync_planning_only_goal(
+                    console,
+                    goal=goal,
+                    contract=contract,
+                    user_lines=lines,
+                    move_list=move_list,
+                )
+            continue
+
         if console and Table is not None:
             table = Table(title=f"Completed Tasks: {goal['goal_title']} {goal['goal_tag']}")
             table.add_column("Done")
@@ -182,8 +275,11 @@ def _sync_completed_tasks(console: Console | None, path: Path) -> int:
             for item in goal["completed"]:
                 print(f"- {item}")
 
-        if not _prompt_yes_no(console, "Create commit for this goal?", default=True):
-            continue
+            if not _prompt_yes_no(console, "Create commit for this goal?"):
+                # A declined completed-commit offer still leaves the goal's
+                # user-added lines on the table: move them out of the goal block.
+                move_list.extend(user_added.get(goal_id, []))
+                continue
 
         minutes = _prompt_optional_minutes(console, goal["goal_title"])
         happy_moment = _prompt_happy_moment(console, goal["goal_title"])
@@ -205,6 +301,8 @@ def _sync_completed_tasks(console: Console | None, path: Path) -> int:
             source_ref=commit_source_ref(goal_id, goal["completed"], goal["incomplete"]),
         )
         created += 1
+
+    _apply_move_list(console, path, text, move_list)
 
     return created
 
@@ -250,17 +348,18 @@ def main() -> int:
     if requested_path != path and console:
         console.print(f"[yellow]Using fallback path:[/yellow] {path}")
 
+    payload = fetch_platform_shared_goals()
+    if payload is None:
+        print("Shared Goals platform unavailable; Compass.md left unchanged.", file=sys.stderr)
+        return 1
+
     if not args.no_sync_completed:
-        created = _sync_completed_tasks(console, path)
+        created = _sync_completed_tasks(console, path, payload)
         if console:
             console.print(f"[green]Created commits:[/green] {created}")
         else:
             print(f"Created commits: {created}")
 
-    payload = fetch_platform_shared_goals()
-    if payload is None:
-        print("Shared Goals platform unavailable; Compass.md left unchanged.", file=sys.stderr)
-        return 1
     update_compass_markdown(payload, path, logos_text=_read_logos_text(args))
 
     if console:

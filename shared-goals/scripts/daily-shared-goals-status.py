@@ -92,6 +92,9 @@ def maybe_sync_completed_tasks(path: Path) -> int:
         return 0
 
     goals = parse_completed_goals_from_compass_text(text)
+    # Decision 7: this plain flow keeps its old contract — goals with completed
+    # items only; planning-only goals belong to compass-update.py.
+    goals = [goal for goal in goals if goal["completed"]]
     if not goals:
         return 0
     if not sys.stdin.isatty():

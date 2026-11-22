@@ -829,18 +829,29 @@ class DailyCompassPureTests(unittest.TestCase):
 """
         parsed = sg_module.parse_completed_goals_from_compass_text(text)
 
-        self.assertEqual(len(parsed), 1)
-        self.assertEqual(parsed[0]["goal_id"], "sg-sharedgoals-dev")
+        # Incomplete-only goals are returned as well now (planning-only goals
+        # drive the quick-task planning commit); ordering follows the file.
+        # The assertions below are order-independent so they stay valid.
+        self.assertEqual(len(parsed), 2)
+        by_id = {item["goal_id"]: item for item in parsed}
         self.assertEqual(
-            parsed[0]["completed"],
+            sorted(by_id),
+            ["sg-sharedgoals-dev", "sg-wtd-writing"],
+        )
+        self.assertEqual(
+            by_id["sg-sharedgoals-dev"]["completed"],
             [
                 "Unite Daily Compass with Shared Goals MVP development loop",
                 "Make Recommended Next Steps and Balanced Shared Goals as view of Compass in Markdown and Telegram",
             ],
         )
         self.assertEqual(
-            parsed[0]["incomplete"],
+            by_id["sg-sharedgoals-dev"]["incomplete"],
             ["Update sg-prd skill README to satisfy the current use case"],
+        )
+        self.assertEqual(
+            by_id["sg-wtd-writing"]["completed"],
+            [],
         )
 
     def test_build_platform_shared_goals_lines_uses_hunger_order(self) -> None:

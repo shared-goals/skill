@@ -454,7 +454,8 @@ When compass output appears truncated in Telegram: check the log file first (`sh
 ## Refactoring the compass core (KISS/DRY/YAGNI/TDD)
 
 When asked to explore or refactor `daily-compass.py`, `daily_compass_shared.py`,
-or `compass/*`:
+`compass/*`, or the Compass.md writers (`compass-update.py`,
+`daily-shared-goals-status.py`, `shared_goals_platform.py`):
 
 1. Read the target files whole first (`grep -n '^def \|^class '` for the map),
    then rank findings by principle (dead code / vestigial params / DRY / TDD
@@ -487,6 +488,15 @@ or `compass/*`:
    filtered to `F` (unused imports, unused locals). The residue of a deletion is
    not only the deleted code: it is the import, the fixture field, and the test
    local that existed only to feed it.
+9. `compass-update.py` and `daily-shared-goals-status.py --update-compass`
+   duplicate the interactive completed-task → Commit flow (~120 lines per
+   side, one Rich, one plain input). Rank a unification pass when either side
+   changes, and preserve the plain variant's non-tty guard behavior.
+10. `update_compass_markdown` in `shared_goals_platform.py` is the single
+    writer of Compass.md and regenerates it from exactly `## Logos` +
+    `## Shared Goals`. A feature that adds user-owned sections to Compass.md
+    must change the writer's section model and add a preservation test —
+    patching a renderer or template alone wipes the content on the next run.
 
 ## Stop conditions
 

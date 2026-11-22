@@ -92,9 +92,14 @@ are available in the environment or `~/.hermes/.env`:
 - `SHARED_GOALS_API_BASE_URL`
 - `SHARED_GOALS_AGENT_KEY_ID`
 
-Implemented endpoint:
+Implemented endpoints:
 
 - `GET /api/v1/compass/next-steps` → active joined-contract `next_step` items
+- `GET /api/v1/compass/shared-goals` → dimension-grouped goals with hunger days (the Compass.md payload)
+- `GET /api/v1/contracts` → active contracts
+- `POST /api/v1/contracts/{contract_id}/commits` → log a Commit
+- `PATCH /api/v1/contracts/{contract_id}` → update contract fields (e.g. `next_step`)
+- `POST /api/v1/goals` → create a Goal; `POST /api/v1/goals/{goal_id}/contracts` → join with a Contract
 
 Planned platform calculations:
 
@@ -184,6 +189,14 @@ Debug a bad or degraded Daily Compass run from the trace log, not from the sent 
 5. Boundary scripts that need `hermes_cli` or `hermes_state` must NOT import them directly or expect `~/.hermes/hermes-agent/venv/` — there is no venv; hermes-agent is a uv project. Run `uv --directory ~/.hermes/hermes-agent run python -c "..."` in a subprocess and parse its JSON stdout (fall back to `~/.hermes/tools/uv-*/uv` when `uv` is not on PATH).
 6. When reproducing a boundary failure, run the failing command under the pipeline's interpreter (`PYTHONPATH=<shared-goals-scripts> uv run ...`), not the login shell — environment leaks (e.g. `UV` exported by `uv run`) only appear there, and a clean-shell success proves nothing.
 7. Strip `UV` from the env of any subprocess that invokes `make`: `uv run` exports `UV=<path-to-uv>`, and a child Makefile using `UV ?= uv run` then expands it to the bare binary, turning `uv run <cmd>` into `uv <cmd>` and failing with an unrecognized-subcommand error.
+
+8. To know what a cron entry actually runs, read `~/.hermes/cron/jobs.json`:
+   `no_agent` jobs carry their runnable in the `script` field (`prompt` is
+   null for them); `last_run_at` / `last_status` / `failure_streak` give run
+   health. A cron `ok` says the entry ran — never what it wrote: map each
+   artifact to its writer before blaming a stale file on the cron (grep the
+   writers — `update_compass_markdown` has exactly two callers in the skill
+   scripts, and neither is the morning cron entry).
 
 ## Area signal
 

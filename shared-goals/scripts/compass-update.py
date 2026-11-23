@@ -14,14 +14,8 @@ from pathlib import Path
 
 from daily_compass_shared import load_json_snapshot, render_next_steps_from_compass_snapshot
 from shared_goals_platform import (
-    QUICK_TASKS_HEADING,
-    commit_source_ref,
-    create_commit,
-    detect_user_added_steps,
-    fetch_active_contracts,
     fetch_platform_shared_goals,
-    move_lines_to_quick_tasks,
-    parse_completed_goals_from_compass_text,
+    sync_compass_tasks,
     update_compass_markdown,
 )
 
@@ -52,259 +46,129 @@ def _resolve_compass_path(path_arg: str) -> Path:
     return Path.home() / "Compass.md"
 
 
-def _prompt_yes_no(console: Console | None, prompt: str, default: bool = True) -> bool:
-    if Confirm is not None:
-        assert console is not None
-        return Confirm.ask(prompt, default=default, console=console)
-    suffix = "[Y/n]" if default else "[y/N]"
-    raw = input(f"{prompt} {suffix} ").strip().lower()
-    if not raw:
-        return default
-    return raw in {"y", "yes"}
+class RichUI:
+    """UI adapter for the sync core: Rich rendering when available, plain otherwise.
 
-
-def _prompt_optional_minutes(console: Console | None, goal_title: str) -> int | None:
-    if IntPrompt is not None:
-        assert console is not None
-        raw = Prompt.ask(f"Minutes for '{goal_title}' (blank to skip)", default="", console=console)
-        raw = raw.strip()
-        if not raw:
-            return None
-        try:
-            value = int(raw)
-        except ValueError:
-            if console:
-                console.print("[yellow]Please enter a whole number or leave blank.[/yellow]")
-            return None
-        return max(0, value)
-
-    while True:
-        raw = input(f"Minutes for '{goal_title}' (blank to skip): ").strip()
-        if not raw:
-            return None
-        try:
-            value = int(raw)
-        except ValueError:
-            print("Please enter a whole number or leave blank.")
-            continue
-        if value < 0:
-            print("Minutes must be non-negative.")
-            continue
-        return value
-
-
-def _prompt_happy_moment(console: Console | None, goal_title: str) -> str | None:
-    if Prompt is not None:
-        assert console is not None
-        raw = Prompt.ask(f"Happy moment for '{goal_title}' (blank if none)", default="", console=console).strip()
-        return raw or None
-    raw = input(f"Happy moment for '{goal_title}' (blank if none): ").strip()
-    return raw or None
-
-
-def _prompt_commit_field_preview(
-    console: Console | None,
-    goal_title: str,
-    *,
-    done: str,
-    next_step: str | None,
-) -> tuple[str, str | None]:
-    if console and Table is not None:
-        table = Table(title=f"Commit Preview: {goal_title}")
-        table.add_column("Field", style="cyan", no_wrap=True)
-        table.add_column("Value", style="white")
-        table.add_row("done", done or "(empty)")
-        table.add_row("next_step", next_step or "(none)")
-        console.print(table)
-    else:
-        print("-" * 60)
-        print(f"Commit preview for '{goal_title}':")
-        print("-" * 60)
-        print("done:")
-        print((done or "(empty)").strip())
-        print()
-        print("next step:")
-        print((next_step or "(none)").strip())
-        print("-" * 60)
-
-    if _prompt_yes_no(console, "Edit done value?", default=False):
-        if Prompt is not None:
-            assert console is not None
-            raw = Prompt.ask("New done value", default=done, console=console).strip()
-        else:
-            raw = input("New done value: ").strip()
-        if raw:
-            done = raw
-
-    if _prompt_yes_no(console, "Edit next step value?", default=False):
-        if Prompt is not None:
-            assert console is not None
-            raw = Prompt.ask("New next step value", default=next_step or "", console=console).strip()
-        else:
-            raw = input("New next step value: ").strip()
-        next_step = raw or None
-
-    return done, next_step
-
-
-def _print_note(console: Console | None, message: str, style: str = "yellow") -> None:
-    if console:
-        console.print(f"[{style}]{message}[/{style}]")
-    else:
-        print(message)
-
-
-def _apply_move_list(
-    console: Console | None,
-    path: Path,
-    text: str,
-    move_list: list[str],
-) -> None:
-    """Persist declined/leftover lines under ## Quick Tasks (no data loss)."""
-    if not move_list:
-        return
-    updated = move_lines_to_quick_tasks(text, move_list)
-    if updated == text:
-        _print_note(console, f"'## {QUICK_TASKS_HEADING}' already holds: " + "; ".join(move_list))
-        return
-    try:
-        path.write_text(updated, encoding="utf-8")
-    except OSError:
-        _print_note(console, f"Could not write moved lines to {path}.")
-        return
-    _print_note(console, f"Moved to '## {QUICK_TASKS_HEADING}': " + "; ".join(move_list))
-
-
-def _sync_planning_only_goal(
-    console: Console | None,
-    *,
-    goal: dict,
-    contract: dict,
-    user_lines: list[str],
-    move_list: list[str],
-) -> int:
-    """Offer user-added lines of a planning-only goal as a planning commit.
-
-    Returns the number of created commits; declined lines go to `move_list`.
+    Owns the interactive prompting for compass-update: the sync loop itself lives
+    in shared_goals_platform.sync_compass_tasks.
     """
-    goal_id = str(goal["goal_id"])
-    title = str(goal["goal_title"])
-    prompt = f"Add {len(user_lines)} line(s) to '{title}' next steps?"
-    if not _prompt_yes_no(console, prompt, default=True):
-        # Lines are already in move_list (pre-seeded): declined means they move
-        # to ## Quick Tasks — do NOT extend again (would duplicate them).
-        _print_note(console, f"Declined: moved {len(user_lines)} line(s) from '{title}' to '## {QUICK_TASKS_HEADING}'.")
-        return 0
 
-    incomplete = list(goal["incomplete"]) + [line for line in user_lines if line not in goal["incomplete"]]
-    create_commit(
-        str(contract.get("contract_id", "")).strip(),
-        done=None,
-        next_step="\n".join(incomplete) or None,
-        time_minutes=None,
-        happy_moment=None,
-        source_ref=commit_source_ref(goal_id, [], incomplete),
-    )
-    # Accepted: the lines now live on the platform as next steps — remove them
-    # from the pending move list so they do not also land in ## Quick Tasks.
-    for line in user_lines:
-        if line in move_list:
-            move_list.remove(line)
-    _print_note(console, f"Planning commit for '{title}' with {len(incomplete)} next step(s).", style="green")
-    return 1
+    def __init__(self, console: Console | None) -> None:
+        self.console = console
 
+    def yes_no(self, prompt: str, default: bool = True) -> bool:
+        if Confirm is not None:
+            assert self.console is not None
+            return Confirm.ask(prompt, default=default, console=self.console)
+        suffix = "[Y/n]" if default else "[y/N]"
+        raw = input(f"{prompt} {suffix} ").strip().lower()
+        if not raw:
+            return default
+        return raw in {"y", "yes"}
 
-def _sync_completed_tasks(console: Console | None, path: Path, payload: dict) -> int:
-    if not path.exists():
-        return 0
+    def optional_minutes(self, goal_title: str) -> int | None:
+        if IntPrompt is not None:
+            assert self.console is not None
+            raw = Prompt.ask(f"Minutes for '{goal_title}' (blank to skip)", default="", console=self.console)
+            raw = raw.strip()
+            if not raw:
+                return None
+            try:
+                value = int(raw)
+            except ValueError:
+                if self.console:
+                    self.console.print("[yellow]Please enter a whole number or leave blank.[/yellow]")
+                return None
+            return max(0, value)
 
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return 0
-
-    goals = parse_completed_goals_from_compass_text(text)
-    if not goals:
-        return 0
-
-    user_added = detect_user_added_steps(goals, payload)
-    move_list = [line for goal in goals if not goal["completed"] for line in user_added.get(str(goal["goal_id"]), [])]
-
-    # Mirror the existing non-interactive guard: no prompts at all; lines that
-    # could only be planned move to ## Quick Tasks instead.
-    if not sys.stdin.isatty():
-        _apply_move_list(console, path, text, move_list)
-        return 0
-
-    contracts = fetch_active_contracts()
-    created = 0
-    for goal in goals:
-        goal_id = str(goal["goal_id"])
-        contract = contracts.get(goal_id)
-        if not contract:
-            message = f"Skipping {goal['goal_title']}: no active contract for {goal['goal_tag']}"
-            if console:
-                console.print(f"[yellow]{message}[/yellow]")
-            else:
-                print(message)
-            continue
-
-        if not goal["completed"]:
-            # Planning-only goal: nothing was completed, so the only thing to
-            # offer is a next_step-only planning commit for user-added lines.
-            lines = user_added.get(goal_id, [])
-            if lines:
-                created += _sync_planning_only_goal(
-                    console,
-                    goal=goal,
-                    contract=contract,
-                    user_lines=lines,
-                    move_list=move_list,
-                )
-            continue
-
-        if console and Table is not None:
-            table = Table(title=f"Completed Tasks: {goal['goal_title']} {goal['goal_tag']}")
-            table.add_column("Done")
-            for item in goal["completed"]:
-                table.add_row(item)
-            console.print(table)
-        else:
-            print()
-            print(f"Completed tasks for {goal['goal_title']} {goal['goal_tag']}:")
-            for item in goal["completed"]:
-                print(f"- {item}")
-
-            if not _prompt_yes_no(console, "Create commit for this goal?"):
-                # A declined completed-commit offer still leaves the goal's
-                # user-added lines on the table: move them out of the goal block.
-                move_list.extend(user_added.get(goal_id, []))
+        while True:
+            raw = input(f"Minutes for '{goal_title}' (blank to skip): ").strip()
+            if not raw:
+                return None
+            try:
+                value = int(raw)
+            except ValueError:
+                print("Please enter a whole number or leave blank.")
                 continue
+            if value < 0:
+                print("Minutes must be non-negative.")
+                continue
+            return value
 
-        minutes = _prompt_optional_minutes(console, goal["goal_title"])
-        happy_moment = _prompt_happy_moment(console, goal["goal_title"])
-        done = "\n".join(goal["completed"]).strip()
-        next_step = "\n".join(goal["incomplete"]).strip() or None
-        done, next_step = _prompt_commit_field_preview(
-            console,
-            goal["goal_title"],
-            done=done,
-            next_step=next_step,
-        )
+    def happy_moment(self, goal_title: str) -> str | None:
+        if Prompt is not None:
+            assert self.console is not None
+            raw = Prompt.ask(
+                f"Happy moment for '{goal_title}' (blank if none)", default="", console=self.console
+            ).strip()
+            return raw or None
+        raw = input(f"Happy moment for '{goal_title}' (blank if none): ").strip()
+        return raw or None
 
-        create_commit(
-            str(contract.get("contract_id", "")).strip(),
-            done=done,
-            next_step=next_step,
-            time_minutes=minutes,
-            happy_moment=happy_moment,
-            source_ref=commit_source_ref(goal_id, goal["completed"], goal["incomplete"]),
-        )
-        created += 1
+    def commit_field_preview(
+        self,
+        goal_title: str,
+        *,
+        done: str,
+        next_step: str | None,
+    ) -> tuple[str, str | None]:
+        if self.console and Table is not None:
+            table = Table(title=f"Commit Preview: {goal_title}")
+            table.add_column("Field", style="cyan", no_wrap=True)
+            table.add_column("Value", style="white")
+            table.add_row("done", done or "(empty)")
+            table.add_row("next_step", next_step or "(none)")
+            self.console.print(table)
+        else:
+            print("-" * 60)
+            print(f"Commit preview for '{goal_title}':")
+            print("-" * 60)
+            print("done:")
+            print((done or "(empty)").strip())
+            print()
+            print("next step:")
+            print((next_step or "(none)").strip())
+            print("-" * 60)
 
-    _apply_move_list(console, path, text, move_list)
+        if self.yes_no("Edit done value?", default=False):
+            if Prompt is not None:
+                assert self.console is not None
+                raw = Prompt.ask("New done value", default=done, console=self.console).strip()
+            else:
+                raw = input("New done value: ").strip()
+            if raw:
+                done = raw
 
-    return created
+        if self.yes_no("Edit next step value?", default=False):
+            if Prompt is not None:
+                assert self.console is not None
+                raw = Prompt.ask("New next step value", default=next_step or "", console=self.console).strip()
+            else:
+                raw = input("New next step value: ").strip()
+            next_step = raw or None
+
+        return done, next_step
+
+    def note(self, message: str) -> None:
+        if self.console:
+            self.console.print(f"[yellow]{message}[/yellow]")
+        else:
+            print(message)
+
+    def show_completed(
+        self, goal_title: str, goal_tag: str, completed: list[str], incomplete: list[str]
+    ) -> None:
+        if self.console and Table is not None:
+            table = Table(title=f"Completed Tasks: {goal_title} {goal_tag}")
+            table.add_column("Done")
+            for item in completed:
+                table.add_row(item)
+            self.console.print(table)
+            return
+        print()
+        print(f"Completed tasks for {goal_title} {goal_tag}:")
+        for item in completed:
+            print(f"- {item}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -354,7 +218,7 @@ def main() -> int:
         return 1
 
     if not args.no_sync_completed:
-        created = _sync_completed_tasks(console, path, payload)
+        created = sync_compass_tasks(path, payload, RichUI(console), planning=True)
         if console:
             console.print(f"[green]Created commits:[/green] {created}")
         else:

@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -384,6 +385,163 @@ def build_platform_lines(payload: dict[str, Any], *, append_goal_tag: bool = Fal
 
 def render_shared_goals_section(payload: dict[str, Any]) -> str:
     return shared_render_shared_goals_section(payload, DEFAULT_DIMENSIONS)
+
+
+def _apply_move_list(ui: Any, path: Path, text: str, move_list: list[str]) -> None:
+    """Persist declined/leftover lines under ## Quick Tasks (no data loss)."""
+    if not move_list:
+        return
+    updated = move_lines_to_quick_tasks(text, move_list)
+    if updated == text:
+        ui.note(f"'## {QUICK_TASKS_HEADING}' already holds: " + "; ".join(move_list))
+        return
+    try:
+        path.write_text(updated, encoding="utf-8")
+    except OSError:
+        ui.note(f"Could not write moved lines to {path}.")
+        return
+    ui.note(f"Moved to '## {QUICK_TASKS_HEADING}': " + "; ".join(move_list))
+
+
+def _sync_planning_only_goal(
+    ui: Any,
+    *,
+    goal: dict[str, Any],
+    contract: dict[str, Any],
+    user_lines: list[str],
+    move_list: list[str],
+) -> int:
+    """Offer user-added lines of a planning-only goal as a planning commit.
+
+    Returns the number of created commits; declined lines go to `move_list`.
+    """
+    goal_id = str(goal["goal_id"])
+    title = str(goal["goal_title"])
+    prompt = f"Add {len(user_lines)} line(s) to '{title}' next steps?"
+    if not ui.yes_no(prompt, default=True):
+        # Lines are already in move_list (pre-seeded): declined means they move
+        # to ## Quick Tasks — do NOT extend again (would duplicate them).
+        ui.note(f"Declined: moved {len(user_lines)} line(s) from '{title}' to '## {QUICK_TASKS_HEADING}'.")
+        return 0
+
+    incomplete = list(goal["incomplete"]) + [line for line in user_lines if line not in goal["incomplete"]]
+    create_commit(
+        str(contract.get("contract_id", "")).strip(),
+        done=None,
+        next_step="\n".join(incomplete) or None,
+        time_minutes=None,
+        happy_moment=None,
+        source_ref=commit_source_ref(goal_id, [], incomplete),
+    )
+    # Accepted: the lines now live on the platform as next steps — remove them
+    # from the pending move list so they do not also land in ## Quick Tasks.
+    for line in user_lines:
+        if line in move_list:
+            move_list.remove(line)
+    ui.note(f"Planning commit for '{title}' with {len(incomplete)} next step(s).")
+    return 1
+
+
+def sync_compass_tasks(path: Path, payload: dict[str, Any], ui: Any, *, planning: bool = True) -> int:
+    """Drive the completed-task / planning commit flow over a Compass file.
+
+    Single implementation shared by the Rich updater and the plain status script:
+    all prompting and display goes through `ui`, so each caller keeps its own
+    look while this core keeps one behavior. `planning=False` restricts the pass
+    to goals that own completed items — no planning prompts, no move list, and no
+    file writes from this phase.
+
+    Returns the number of created commits.
+    """
+    if not path.exists():
+        return 0
+
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return 0
+
+    goals = parse_completed_goals_from_compass_text(text)
+    if not planning:
+        # The plain status flow keeps its old contract: goals with completed
+        # items only; planning-only goals belong to the planning-capable caller.
+        goals = [goal for goal in goals if goal["completed"]]
+    if not goals:
+        return 0
+
+    move_list: list[str] = []
+    user_added: dict[str, list[str]] = {}
+    if planning:
+        user_added = detect_user_added_steps(goals, payload)
+        move_list = [
+            line for goal in goals if not goal["completed"] for line in user_added.get(str(goal["goal_id"]), [])
+        ]
+
+    # Mirror the existing non-interactive guard: no prompts at all; lines that
+    # could only be planned move to ## Quick Tasks instead.
+    if not sys.stdin.isatty():
+        if not planning:
+            # The plain variant has no user-added lines to preserve, so it does
+            # not touch the file — it only says why nothing was asked.
+            ui.note("Completed Shared Goals tasks detected, but prompts require an interactive terminal.")
+            return 0
+        _apply_move_list(ui, path, text, move_list)
+        return 0
+
+    contracts = fetch_active_contracts()
+    created = 0
+    for goal in goals:
+        goal_id = str(goal["goal_id"])
+        contract = contracts.get(goal_id)
+        if not contract:
+            message = f"Skipping {goal['goal_title']}: no active contract for {goal['goal_tag']}"
+            if not planning:
+                # The plain variant's wording differs by design; keep it.
+                message = f"Skipping {goal['goal_title']}: no active contract found for {goal['goal_tag']}"
+            ui.note(message)
+            continue
+
+        if not goal["completed"]:
+            # Planning-only goal: nothing was completed, so the only thing to
+            # offer is a next_step-only planning commit for user-added lines.
+            lines = user_added.get(goal_id, [])
+            if lines:
+                created += _sync_planning_only_goal(
+                    ui,
+                    goal=goal,
+                    contract=contract,
+                    user_lines=lines,
+                    move_list=move_list,
+                )
+            continue
+
+        ui.show_completed(str(goal["goal_title"]), str(goal["goal_tag"]), list(goal["completed"]), list(goal["incomplete"]))
+
+        if not ui.yes_no("Create commit for this goal?"):
+            # A declined completed-commit offer still leaves the goal's
+            # user-added lines on the table: move them out of the goal block.
+            move_list.extend(user_added.get(goal_id, []))
+            continue
+
+        minutes = ui.optional_minutes(goal["goal_title"])
+        happy_moment = ui.happy_moment(goal["goal_title"])
+        done = "\n".join(goal["completed"]).strip()
+        next_step = "\n".join(goal["incomplete"]).strip() or None
+        done, next_step = ui.commit_field_preview(goal["goal_title"], done=done, next_step=next_step)
+
+        create_commit(
+            str(contract.get("contract_id", "")).strip(),
+            done=done,
+            next_step=next_step,
+            time_minutes=minutes,
+            happy_moment=happy_moment,
+            source_ref=commit_source_ref(goal_id, goal["completed"], goal["incomplete"]),
+        )
+        created += 1
+
+    _apply_move_list(ui, path, text, move_list)
+
+    return created
 
 
 def _read_next_steps(path: Path) -> str:

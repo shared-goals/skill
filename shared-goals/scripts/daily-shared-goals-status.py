@@ -12,23 +12,72 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 from daily_compass_shared import (
     load_env_file,
     make_boundary_payload,
 )
-from shared_goals_platform import (
+# NOTE: the four names below (`commit_source_ref`, `create_commit`,
+# `fetch_active_contracts`, `parse_completed_goals_from_compass_text`) are not
+# called in this module: the sync core resolves them in
+# shared_goals_platform's namespace. They stay re-exported here so callers and
+# tests that steered them through this script keep working.
+from shared_goals_platform import (  # noqa: F401
     build_platform_lines,
     commit_source_ref,
     create_commit,
     fetch_active_contracts,
     fetch_platform_shared_goals,
     parse_completed_goals_from_compass_text,
+    sync_compass_tasks,
     update_compass_markdown,
 )
 from shared_goals_platform import (
     render_shared_goals_section as _render_shared_goals_section,
 )
+
+# Rich is optional on this host; the flags mirror compass-update.py's probe, so a
+# caller can tell which prompting branch the interpreter really supports.
+try:
+    from rich.console import Console
+    from rich.prompt import Confirm, IntPrompt, Prompt
+    from rich.table import Table
+except Exception:  # pragma: no cover - graceful fallback when rich is absent.
+    Console = None
+    Confirm = None
+    IntPrompt = None
+    Prompt = None
+    Table = None
+
+
+class PlainUI:
+    """UI adapter for the sync core: plain input/print, no Rich dependency.
+
+    Prompts delegate to the module-level `_prompt_*` helpers, so a caller that
+    used to steer those still reaches the same code path.
+    """
+
+    def yes_no(self, prompt: str, default: bool = True) -> bool:
+        return _prompt_yes_no(prompt, default)
+
+    def optional_minutes(self, goal_title: str) -> int | None:
+        return _prompt_optional_minutes(goal_title)
+
+    def happy_moment(self, goal_title: str) -> str | None:
+        return _prompt_happy_moment(goal_title)
+
+    def commit_field_preview(self, goal_title: str, *, done: str, next_step: str | None) -> tuple[str, str | None]:
+        return _prompt_commit_field_preview(goal_title, done=done, next_step=next_step)
+
+    def note(self, message: str) -> None:
+        print(message)
+
+    def show_completed(self, goal_title: str, goal_tag: str, completed: list[str], incomplete: list[str]) -> None:
+        print()
+        print(f"Completed tasks for {goal_title} {goal_tag}:")
+        for item in completed:
+            print(f"- {item}")
 
 
 def _prompt_yes_no(prompt: str, default: bool = True) -> bool:
@@ -83,56 +132,17 @@ def _prompt_commit_field_preview(goal_title: str, *, done: str, next_step: str |
     return done, next_step
 
 
-def maybe_sync_completed_tasks(path: Path) -> int:
-    if not path.exists():
-        return 0
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return 0
+def maybe_sync_completed_tasks(path: Path, *, ui: Any = None, payload: dict[str, Any] | None = None) -> int:
+    """Offer commits for goals with completed items (planning-less sync pass).
 
-    goals = parse_completed_goals_from_compass_text(text)
-    # Decision 7: this plain flow keeps its old contract — goals with completed
-    # items only; planning-only goals belong to compass-update.py.
-    goals = [goal for goal in goals if goal["completed"]]
-    if not goals:
-        return 0
-    if not sys.stdin.isatty():
-        print("Completed Shared Goals tasks detected, but prompts require an interactive terminal.")
-        return 0
-
-    contracts = fetch_active_contracts()
-    created = 0
-    for goal in goals:
-        goal_id = str(goal["goal_id"])
-        contract = contracts.get(goal_id)
-        if not contract:
-            print(f"Skipping {goal['goal_title']}: no active contract found for {goal['goal_tag']}")
-            continue
-
-        print()
-        print(f"Completed tasks for {goal['goal_title']} {goal['goal_tag']}:")
-        for item in goal["completed"]:
-            print(f"- {item}")
-
-        if not _prompt_yes_no("Create commit for this goal?", default=True):
-            continue
-
-        minutes = _prompt_optional_minutes(goal["goal_title"])
-        happy_moment = _prompt_happy_moment(goal["goal_title"])
-        done = "\n".join(goal["completed"]).strip()
-        next_step = "\n".join(goal["incomplete"]).strip() or None
-        done, next_step = _prompt_commit_field_preview(goal["goal_title"], done=done, next_step=next_step)
-        create_commit(
-            str(contract.get("contract_id", "")).strip(),
-            done=done,
-            next_step=next_step,
-            time_minutes=minutes,
-            happy_moment=happy_moment,
-            source_ref=commit_source_ref(goal_id, goal["completed"], goal["incomplete"]),
-        )
-        created += 1
-    return created
+    `ui` / `payload` are injectable for tests; the CLI path passes neither and
+    behaves exactly as before.
+    """
+    if ui is None:
+        ui = PlainUI()
+    if payload is None:
+        payload = fetch_platform_shared_goals() or {}
+    return sync_compass_tasks(path, payload, ui, planning=False)
 
 
 def _default_compass_path() -> str:

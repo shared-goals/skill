@@ -426,6 +426,104 @@ class FakeConsole:
         self.lines.append(" ".join(str(a) for a in args))
 
 
+class FakeUI:
+    """Scriptable `ui` for sg.sync_compass_tasks: canned answers + call logs.
+
+    Consumes the test's own `answers` list in place — the old prompt fakes popped
+    from it, and `assert answers == []` is the guard that no extra prompt was
+    asked. The two "no edit" answers are only consumed on the plain branch:
+    Rich's `Confirm.edit` takes the default without a keystroke when stdin is not
+    a tty, so the list is sized by `compass_update.Confirm is None`.
+    """
+
+    def __init__(self, *, answers=None, console=None) -> None:
+        self.answers = answers if answers is not None else []
+        self.console = console
+        self.lines: list[str] = []
+        self.yes_no_prompts: list[str] = []
+        self.yes_no_defaults: list[bool] = []
+        self.minutes_calls: list[str] = []
+        self.happy_calls: list[str] = []
+        self.preview_calls: list[tuple[str, str, str | None]] = []
+        self.show_completed_calls: list[tuple[str, str, list[str], list[str]]] = []
+
+    @staticmethod
+    def _rich() -> bool:
+        """Whether the Rich prompting path is live (same module-level flag the
+        loaded scripts gate on, so the fake stays in step with them)."""
+        return compass_update.Confirm is not None
+
+    def _next(self, prompt: str) -> str:
+        print(prompt, end=" ", flush=True)
+        return str(self.answers.pop(0))
+
+    def yes_no(self, prompt: str, default: bool = True) -> bool:
+        self.yes_no_prompts.append(prompt)
+        self.yes_no_defaults.append(default)
+        if self._rich():
+            from rich.console import Console
+            from rich.prompt import Confirm
+
+            # Mirror RichUI: Confirm.ask reads EOF from the redirected stdin and
+            # falls back to `default`, so no `answers` entry is consumed here.
+            return Confirm.ask(prompt, default=default, console=Console())
+        raw = self._next(prompt)
+        if not raw:
+            return default
+        return raw.strip().lower() in {"y", "yes"}
+
+    def optional_minutes(self, goal_title: str) -> int | None:
+        self.minutes_calls.append(goal_title)
+        # Consumed but unused: the old tests canned this answer as None, and the
+        # `answers` list is the no-extra-prompt guard — so this slot must never
+        # be fed by `answers`.
+        return None
+
+    def happy_moment(self, goal_title: str) -> str | None:
+        self.happy_calls.append(goal_title)
+        return None
+
+    def commit_field_preview(self, goal_title: str, *, done: str, next_step: str | None) -> tuple[str, str | None]:
+        self.preview_calls.append((goal_title, done, next_step))
+        if self._rich():
+            from rich.console import Console
+            from rich.prompt import Confirm, Prompt
+
+            console = Console()
+            if Confirm.ask("Edit done value?", default=False, console=console):
+                done = Prompt.ask("New done value", default=done, console=console).strip() or done
+            if Confirm.ask("Edit next step value?", default=False, console=console):
+                next_step = Prompt.ask("New next step value", default=next_step or "", console=console).strip() or None
+            return done, next_step
+
+        print("-" * 60)
+        print(f"Commit preview for '{goal_title}':")
+        print("-" * 60)
+        print("done:")
+        print((done or "(empty)").strip())
+        print()
+        print("next step:")
+        print((next_step or "(none)").strip())
+        print("-" * 60)
+        if self.yes_no("Edit done value?", default=False):
+            raw = self._next("New done value:")
+            if raw:
+                done = raw
+        if self.yes_no("Edit next step value?", default=False):
+            next_step = self._next("New next step value:").strip() or None
+        return done, next_step
+
+    def note(self, message: str) -> None:
+        self.lines.append(message)
+        if self.console:
+            self.console.print(message)
+
+    def show_completed(
+        self, goal_title: str, goal_tag: str, completed: list[str], incomplete: list[str]
+    ) -> None:
+        self.show_completed_calls.append((goal_title, goal_tag, completed, incomplete))
+
+
 def _payload_with_contract() -> dict:
     return {
         "dimensions": [
@@ -463,13 +561,12 @@ def test_sync_prompts_and_creates_planning_commit_for_user_added_lines() -> None
             encoding="utf-8",
         )
         contracts = {"sg-finance": {"contract_id": "c-1"}}
+        ui = FakeUI(answers=["y"])
 
-        with mock.patch.object(compass_update, "fetch_active_contracts", return_value=contracts), mock.patch.object(
-            compass_update, "create_commit"
-        ) as create, mock.patch.object(compass_update, "_prompt_yes_no", return_value=True) as yesno, mock.patch.object(
-            compass_update.sys.stdin, "isatty", lambda: True
-        ):
-            created = compass_update._sync_completed_tasks(FakeConsole(), path, _payload_with_contract())
+        with mock.patch.object(sg, "fetch_active_contracts", return_value=contracts), mock.patch.object(
+            sg, "create_commit"
+        ) as create, mock.patch.object(sg.sys.stdin, "isatty", lambda: True):
+            created = sg.sync_compass_tasks(path, _payload_with_contract(), ui, planning=True)
 
         assert created == 1
         create.assert_called_once()
@@ -481,8 +578,10 @@ def test_sync_prompts_and_creates_planning_commit_for_user_added_lines() -> None
         assert kwargs["happy_moment"] is None
         assert kwargs["source_ref"] == sg.commit_source_ref("sg-finance", [], ["Platform budget review", "Add quick backup"])
         # exactly one prompt (the planning prompt): no minutes/happy prompts consumed
-        assert yesno.call_count == 1
-        assert "Add 1 line" in yesno.call_args_list[0][0][1]
+        assert ui.yes_no_prompts == ["Add 1 line(s) to 'Finance' next steps?"]
+        assert ui.yes_no_defaults == [True]
+        assert ui.minutes_calls == []
+        assert ui.happy_calls == []
         # Accepted planning commit: the line lives on the platform now, it must
         # NOT also be moved into ## Quick Tasks (duplication regression guard).
         final_text = path.read_text(encoding="utf-8")
@@ -508,24 +607,23 @@ def test_sync_declined_lines_move_to_quick_tasks() -> None:
             encoding="utf-8",
         )
         contracts = {"sg-finance": {"contract_id": "c-1"}}
-        console = FakeConsole()
+        ui = FakeUI(answers=["n"], console=FakeConsole())
 
-        with mock.patch.object(compass_update, "fetch_active_contracts", return_value=contracts), mock.patch.object(
-            compass_update, "create_commit"
-        ) as create, mock.patch.object(compass_update, "_prompt_yes_no", return_value=False), mock.patch.object(
-            compass_update.sys.stdin, "isatty", lambda: True
-        ):
-            created = compass_update._sync_completed_tasks(console, path, _payload_with_contract())
+        with mock.patch.object(sg, "fetch_active_contracts", return_value=contracts), mock.patch.object(
+            sg, "create_commit"
+        ) as create, mock.patch.object(sg.sys.stdin, "isatty", lambda: True):
+            created = sg.sync_compass_tasks(path, _payload_with_contract(), ui, planning=True)
 
         assert created == 0
         create.assert_not_called()
+        assert ui.yes_no_prompts == ["Add 1 line(s) to 'Finance' next steps?"]
         text = path.read_text(encoding="utf-8")
         assert "## Quick Tasks" in text
         quick = text.split("## Quick Tasks", 1)[1]
         # exactly ONE copy of the declined line in Quick Tasks (the move list is
         # pre-seeded — a second extend would duplicate it)
         assert quick.count("- [ ] Add quick backup") == 1
-        assert any("Add quick backup" in line for line in console.lines)
+        assert any("Add quick backup" in line for line in ui.lines)
 
 
 def test_sync_non_tty_moves_lines_with_notice_and_no_prompts() -> None:
@@ -547,23 +645,21 @@ def test_sync_non_tty_moves_lines_with_notice_and_no_prompts() -> None:
             encoding="utf-8",
         )
         contracts = {"sg-finance": {"contract_id": "c-1"}}
-        console = FakeConsole()
+        ui = FakeUI(answers=[], console=FakeConsole())
         stdin_not_tty = types.SimpleNamespace(isatty=lambda: False)
 
-        with mock.patch.object(compass_update, "fetch_active_contracts", return_value=contracts), mock.patch.object(
-            compass_update, "create_commit"
-        ) as create, mock.patch.object(compass_update, "_prompt_yes_no") as yesno, mock.patch.object(
-            compass_update.sys, "stdin", stdin_not_tty
-        ):
-            created = compass_update._sync_completed_tasks(console, path, _payload_with_contract())
+        with mock.patch.object(sg, "fetch_active_contracts", return_value=contracts), mock.patch.object(
+            sg, "create_commit"
+        ) as create, mock.patch.object(sg.sys, "stdin", stdin_not_tty):
+            created = sg.sync_compass_tasks(path, _payload_with_contract(), ui, planning=True)
 
         assert created == 0
         create.assert_not_called()
-        yesno.assert_not_called()
+        assert ui.yes_no_prompts == []
         text = path.read_text(encoding="utf-8")
         assert "## Quick Tasks" in text
         assert "- [ ] Add quick backup" in text
-        assert any("Add quick backup" in line for line in console.lines)
+        assert any("Add quick backup" in line for line in ui.lines)
 
 
 def test_sync_completed_goal_flow_unchanged_and_does_not_offer_user_added_line() -> None:
@@ -578,37 +674,33 @@ def test_sync_completed_goal_flow_unchanged_and_does_not_offer_user_added_line()
             "sg-homelab": {"contract_id": "c-home"},
             "sg-finance": {"contract_id": "c-fin"},
         }
-        # homelab: commit? y, edit done? n, edit next? n
-        answers = ["y", "n", "n"]
-        prompts: list[str] = []
+        # homelab: commit? y, edit done? n, edit next? n. Rich's Confirm.edit
+        # takes the default without a keystroke when stdin is not a tty, so the
+        # two "n" answers only reach input() on the plain branch.
+        answers = ["y", "n", "n"] if compass_update.Confirm is None else ["y"]
         contract_ids: list[str] = []
 
         def fake_create(contract_id, **kwargs):
             contract_ids.append(contract_id)
             return {"ok": True}
 
-        def fake_prompt(_console, prompt, default=True):
-            prompts.append(prompt)
-            raw = answers.pop(0)
-            return default if not raw else raw in {"y", "yes"}
+        ui = FakeUI(answers=answers, console=FakeConsole())
 
-        with mock.patch.object(compass_update, "fetch_active_contracts", return_value=contracts), mock.patch.object(
-            compass_update, "create_commit", side_effect=fake_create
-        ), mock.patch.object(compass_update, "_prompt_yes_no", side_effect=fake_prompt), mock.patch.object(
-            compass_update, "_prompt_optional_minutes", return_value=None
-        ), mock.patch.object(
-            compass_update, "_prompt_happy_moment", return_value=None
-        ), mock.patch.object(
-            compass_update.sys.stdin, "isatty", lambda: True
-        ):
-            created = compass_update._sync_completed_tasks(FakeConsole(), path, COMPLETED_CLEAN_PAYLOAD)
+        with mock.patch.object(sg, "fetch_active_contracts", return_value=contracts), mock.patch.object(
+            sg, "create_commit", side_effect=fake_create
+        ), mock.patch.object(sg.sys.stdin, "isatty", lambda: True):
+            created = sg.sync_compass_tasks(path, COMPLETED_CLEAN_PAYLOAD, ui, planning=True)
 
         assert created == 1
         assert contract_ids == ["c-home"]
+        # answers are consumed from the canonical list, not FakeUI's copy
         assert answers == []
         # the music goal is planning-only but has no contract, so it is skipped
         # before any prompt; nothing was user-added, so nothing was moved.
-        assert prompts == ["Create commit for this goal?", "Edit done value?", "Edit next step value?"]
+        assert ui.yes_no_prompts == ["Create commit for this goal?", "Edit done value?", "Edit next step value?"]
+        assert ui.minutes_calls == ["Homelab"]
+        assert ui.happy_calls == ["Homelab"]
+        assert ui.preview_calls == [("Homelab", "Platform step one", "Platform step two")]
         assert path.read_text(encoding="utf-8") == SHARED_GOALS_COMPLETED_CLEAN
 
 
@@ -621,7 +713,7 @@ def test_main_fetches_payload_before_syncing() -> None:
             compass_path=str(path), no_sync_completed=False, logos_context=""
         )
 
-        def fake_sync(console, p, payload):
+        def fake_sync(path, payload, ui, *, planning=True):
             calls.append("sync")
             assert isinstance(payload, dict)
             return 0
@@ -629,7 +721,7 @@ def test_main_fetches_payload_before_syncing() -> None:
         with mock.patch.object(compass_update, "parse_args", return_value=args), mock.patch.object(
             compass_update, "fetch_platform_shared_goals",
             side_effect=lambda: calls.append("fetch") or PAYLOAD,
-        ), mock.patch.object(compass_update, "_sync_completed_tasks", side_effect=fake_sync), mock.patch.object(
+        ), mock.patch.object(compass_update, "sync_compass_tasks", side_effect=fake_sync), mock.patch.object(
             compass_update, "update_compass_markdown"
         ):
             rc = compass_update.main()
@@ -657,7 +749,7 @@ def test_main_refetches_payload_after_sync_creates_commits() -> None:
 
         with mock.patch.object(compass_update, "parse_args", return_value=args), mock.patch.object(
             compass_update, "fetch_platform_shared_goals", side_effect=lambda: next(fetches)
-        ), mock.patch.object(compass_update, "_sync_completed_tasks", return_value=1), mock.patch.object(
+        ), mock.patch.object(compass_update, "sync_compass_tasks", return_value=1), mock.patch.object(
             compass_update,
             "update_compass_markdown",
             side_effect=lambda payload, p, **kw: rendered.append(payload),
@@ -684,7 +776,7 @@ def test_main_skips_refetch_when_sync_creates_no_commits() -> None:
 
         with mock.patch.object(compass_update, "parse_args", return_value=args), mock.patch.object(
             compass_update, "fetch_platform_shared_goals", side_effect=fake_fetch
-        ), mock.patch.object(compass_update, "_sync_completed_tasks", return_value=0), mock.patch.object(
+        ), mock.patch.object(compass_update, "sync_compass_tasks", return_value=0), mock.patch.object(
             compass_update,
             "update_compass_markdown",
             side_effect=lambda payload, p, **kw: rendered.append(payload),
@@ -760,31 +852,29 @@ def test_status_script_sync_prompts_only_for_goals_with_completed_items() -> Non
             "sg-homelab": {"contract_id": "c-home"},
             "sg-finance": {"contract_id": "c-fin"},
         }
-        # homelab (completed flow): commit? y, edit done? n, edit next? n.
-        # finance is planning-only and must never be prompted for here.
-        answers = ["y", "n", "n"]
-        prompts: list[str] = []
+        # Rich's Confirm.edit takes the default without a keystroke when stdin is
+        # not a tty, so the two "no edit" answers are only consumed on the plain
+        # branch — the list is sized to the branch the script really takes.
+        answers = ["y", "n", "n"] if status.Confirm is None else ["y"]
         contract_ids: list[str] = []
 
         def fake_create(contract_id, **kwargs):
             contract_ids.append(contract_id)
             return {"ok": True}
 
-        def fake_prompt(prompt, default=True):
-            prompts.append(prompt)
-            raw = answers.pop(0)
-            return default if not raw else raw in {"y", "yes"}
+        # PlainUI drives its own prompts, but PlainUI is never actually
+        # constructed here: the core consumes `fetch_active_contracts` /
+        # `create_commit` from shared_goals_platform's namespace, so those two
+        # stay patched on `sg`. The Rich import in this harness proves the
+        # branch the script would take, so the fake must take it too.
+        ui = FakeUI(answers=answers, console=FakeConsole())
 
-        with mock.patch.object(status, "fetch_active_contracts", return_value=contracts), mock.patch.object(
-            status, "create_commit", side_effect=fake_create
-        ), mock.patch.object(status, "_prompt_yes_no", side_effect=fake_prompt), mock.patch.object(
-            status, "_prompt_optional_minutes", return_value=None
-        ), mock.patch.object(
-            status, "_prompt_happy_moment", return_value=None
+        with mock.patch.object(sg, "fetch_active_contracts", return_value=contracts), mock.patch.object(
+            sg, "create_commit", side_effect=fake_create
         ), mock.patch.object(
             status.sys.stdin, "isatty", lambda: True
         ):
-            created = status.maybe_sync_completed_tasks(path)
+            created = status.maybe_sync_completed_tasks(path, ui=ui)
 
         # finance (planning-only) must not be prompted for: only one commit,
         # and the answer list is fully consumed by the homelab flow.
@@ -793,5 +883,6 @@ def test_status_script_sync_prompts_only_for_goals_with_completed_items() -> Non
         assert answers == []
         # no planning offer at all in the plain status flow, and no file write
         # from the sync itself
-        assert [p for p in prompts if "next steps?" in p] == []
+        assert [p for p in ui.yes_no_prompts if "next steps?" in p] == []
+        assert ui.yes_no_prompts == ["Create commit for this goal?", "Edit done value?", "Edit next step value?"]
         assert path.read_text(encoding="utf-8") == SHARED_GOALS_COMPLETED_CLEAN

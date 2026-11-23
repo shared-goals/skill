@@ -10,7 +10,7 @@ Read the repositories in this order when you need the whole system context:
 2. [shared-goals/instance](https://github.com/shared-goals/instance) — platform API, persistence, authentication, and backend tests.
 3. [shared-goals/skill](https://github.com/shared-goals/skill) — Hermes skill set and local client connector for agents.
 4. [shared-goals/text-forge](https://github.com/shared-goals/text-forge) — Markdown tooling, Obsidian helpers, publishing, inventory, and Hindsight projection.
-5. [bongiozzo/whattodo](https://github.com/bongiozzo/whattodo) — public WTD Markdown text and laptop operator workflow.
+5. [bongiozzo/whattodo](https://github.com/bongiozzo/whattodo) — the reference public WTD Markdown text and laptop operator workflow; a fork publishes its own site and the flow stays the same.
 
 This repository owns the Hermes skills and local client connector. The canonical component map lives in `shared-goals/prd`.
 
@@ -21,7 +21,7 @@ The WTD workflow illustrates two distinct uses of Markdown:
 - **Private context:** `Compass.md` is a local Obsidian note. It is used by the
 	agent as working context for Shared Goals commits, next steps, and explicit
 	user-approved updates. The note itself stays local. The connector sends structured requests to the platform API; Daily Compass can also send derived context to the configured model and deliver its report to Telegram when sending is enabled.
-- **Public context:** the WTD repository (`bongiozzo/whattodo`) is a public
+- **Public context:** a WTD repository (the reference is `bongiozzo/whattodo`) is a public
 	collection of reflective essays. `wtd-content-analyze` uses Hindsight to
 	find relevant ideas and checks quotations against the published text or
 	source checkout. The text, not the memory projection, is authoritative.
@@ -33,7 +33,7 @@ text repository and Text Forge tooling.
 ```mermaid
 flowchart LR
 		Compass["Private Compass.md<br/>local Obsidian note"]
-		WTD["Public WTD Markdown<br/>bongiozzo/whattodo"]
+		WTD["public WTD Markdown<br/>(reference: bongiozzo/whattodo)"]
 		Forge["Text Forge<br/>editing, publishing, Hindsight projection"]
 		Skill["shared-goals skill<br/>Hermes client connector"]
 		API["Shared Goals instance<br/>agent REST API"]
@@ -113,8 +113,8 @@ memory, stateless model calls, platform-owned hunger order — are recorded in
 
 `compass-update.py` is the connector implementation for updating a local
 `Compass.md` from a Shared Goals platform endpoint. In the WTD laptop workflow,
-the user-facing target lives beside WTD ingest in the `bongiozzo/whattodo`
-Makefile:
+the user-facing target lives beside WTD ingest in a whattodo checkout's
+Makefile (the reference is `bongiozzo/whattodo`):
 
 ```bash
 make compass-update

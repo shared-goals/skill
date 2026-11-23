@@ -62,16 +62,19 @@ checkout of the corpus at all — do not spend a step searching for one; go
 straight to the published-site route. The corpus is a separate
 content repo (`whattodo`), so grepping the skill/hermes tree for a person or
 term finds only references and memory notes, never chapter text — don't conclude
-the text is missing. The live corpus is https://text.sharedgoals.ru: one route
+the text is missing. The live corpus is the user's published WTD site — a
+whattodo fork serves its own site via its CI `publish.yml` (the reference
+deployment is https://text.sharedgoals.ru): one route
 per chapter (`/p2-155-photo/`) with `#anchor` sections, plus a people index
 (`/p2-100-authors/`) and cross-chapter links of the form
-`text.sharedgoals.ru/<chapter>/#<anchor>`. Fast path for "search the WTD text for
-X": grep `~/.hermes/cache/web/text.sharedgoals.ru-*.md` (web_extract leaves
+`<site>/<chapter>/#<anchor>`. Fast path for "search the WTD text for
+X": grep `~/.hermes/cache/web/<site-host>-*.md` (e.g.
+`text.sharedgoals.ru-*.md`; web_extract leaves
 snapshots there) to locate the chapter, then `web_extract` that chapter page and
 read the anchored section. Those cache files are stale snapshots — quote from
 the live page, and report the source as the site rather than a pinned commit.
 Cache snapshot filenames are hashes: identify which chapter a file holds by
-grepping its head for the `https://text.sharedgoals.ru/<chapter>/` URL.
+grepping its head for the `https://<site>/<chapter>/` URL.
 
 **One live fetch serves all quotes of a chapter.** `web_extract` saves the full
 chapter text to a cache file (path in the result footer). Grep that saved file

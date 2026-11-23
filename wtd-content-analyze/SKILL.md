@@ -57,7 +57,9 @@ Do not discard local changes, reset, rebase, or resolve conflicts automatically.
 If a pull is blocked by local changes or fails, report that source freshness is
 uncertain and continue only if the user has not required a fresh checkout.
 
-**No checkout on this host? Use the published site.** The corpus is a separate
+**No checkout on this host? Use the published site.** Some hosts have no
+checkout of the corpus at all — do not spend a step searching for one; go
+straight to the published-site route. The corpus is a separate
 content repo (`whattodo`), so grepping the skill/hermes tree for a person or
 term finds only references and memory notes, never chapter text — don't conclude
 the text is missing. The live corpus is https://text.sharedgoals.ru: one route
@@ -68,6 +70,14 @@ X": grep `~/.hermes/cache/web/text.sharedgoals.ru-*.md` (web_extract leaves
 snapshots there) to locate the chapter, then `web_extract` that chapter page and
 read the anchored section. Those cache files are stale snapshots — quote from
 the live page, and report the source as the site rather than a pinned commit.
+Cache snapshot filenames are hashes: identify which chapter a file holds by
+grepping its head for the `https://text.sharedgoals.ru/<chapter>/` URL.
+
+**One live fetch serves all quotes of a chapter.** `web_extract` saves the full
+chapter text to a cache file (path in the result footer). Grep that saved file
+for every quote candidate and its line numbers first; run additional live
+fetches only for chapters not yet fetched. Do not re-fetch the live page once
+per quote.
 
 The WTD corpus is also loaded into Hindsight with tag `wtd`. Use Hindsight for
 semantic recall and synthesis, not for unverifiable literal quotations.

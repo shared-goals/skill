@@ -141,6 +141,7 @@ Morning cron behavior for MVP:
 - `## Shared Goals` is fully generated and grouped by `faith`, `will`, `feeling`, `mind`.
 - Completed `[x]` items under a goal are offered as commit proposals (interactive confirm).
 - A task line pasted under a goal that is not a platform step is offered as a planning commit (`done` empty, `next_step` = the goal's remaining steps); if declined or non-interactive, the line moves to `## Quick Tasks` — never silently dropped.
+- The checkbox is optional in the file: any dash line under a goal headline is a task — the checkbox only marks completion, and the renderer normalizes everything back to `- [ ]`.
 
 ## Area File Format
 
@@ -202,6 +203,19 @@ Debug a bad or degraded Daily Compass run from the trace log, not from the sent 
    artifact to its writer before blaming a stale file on the cron (grep the
    writers — `update_compass_markdown` has exactly two callers in the skill
    scripts, and neither is the morning cron entry).
+
+9. Platform commits store `created_at` as naive UTC, not local time — add the
+   timezone offset before correlating a database record with a laptop run.
+   To attribute a mystery commit to the code path that created it, recompute
+   the `source_ref` digest (first 16 hex of sha256 over
+   `{goal_id, completed, incomplete}` with json sort_keys) for each candidate
+   hypothesis and compare — the digest identifies the exact call site.
+10. POST /commits with `done=None` makes the MVP instance write the contract's
+   PREVIOUS next_step into `done` (`payload.done or _latest_next_step` in the
+   instance app) — planning commits carry a phantom done that reads like
+   completed work in the commit feed. The next_step data itself is stored
+   correctly; treat the done field of planning commits as noise until the
+   instance drops the fallback.
 
 ## Area signal
 

@@ -638,6 +638,71 @@ def test_main_fetches_payload_before_syncing() -> None:
         assert calls == ["fetch", "sync"]
 
 
+def test_main_refetches_payload_after_sync_creates_commits() -> None:
+    """Sync mutates the platform (commits) — the file must be rendered from a
+    REFRESHED payload, or freshly committed next steps vanish from Compass.md
+    in the very run that created them (the file lags one commit behind)."""
+    old_payload = {"dimensions": []}
+    new_payload = {
+        "dimensions": [
+            {"dimension": "mind", "goals": [{"goal_tag": "#sg-x", "goal_title": "X", "next_step_text": "fresh step"}]}
+        ]
+    }
+    fetches = iter([old_payload, new_payload])
+    rendered: list[object] = []
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "Compass.md"
+        path.write_text(SHARED_GOALS_WITH_USER_LINE, encoding="utf-8")
+        args = types.SimpleNamespace(compass_path=str(path), no_sync_completed=False, logos_context="")
+
+        with mock.patch.object(compass_update, "parse_args", return_value=args), mock.patch.object(
+            compass_update, "fetch_platform_shared_goals", side_effect=lambda: next(fetches)
+        ), mock.patch.object(compass_update, "_sync_completed_tasks", return_value=1), mock.patch.object(
+            compass_update,
+            "update_compass_markdown",
+            side_effect=lambda payload, p, **kw: rendered.append(payload),
+        ):
+            rc = compass_update.main()
+
+    assert rc == 0
+    assert rendered == [new_payload]
+
+
+def test_main_skips_refetch_when_sync_creates_no_commits() -> None:
+    """No commits were created — the platform did not change, one fetch is enough."""
+    the_payload = {"dimensions": []}
+    fetch_count = []
+    rendered: list[object] = []
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "Compass.md"
+        path.write_text(SHARED_GOALS_WITH_USER_LINE, encoding="utf-8")
+        args = types.SimpleNamespace(compass_path=str(path), no_sync_completed=False, logos_context="")
+
+        def fake_fetch() -> dict:
+            fetch_count.append(1)
+            return the_payload
+
+        with mock.patch.object(compass_update, "parse_args", return_value=args), mock.patch.object(
+            compass_update, "fetch_platform_shared_goals", side_effect=fake_fetch
+        ), mock.patch.object(compass_update, "_sync_completed_tasks", return_value=0), mock.patch.object(
+            compass_update,
+            "update_compass_markdown",
+            side_effect=lambda payload, p, **kw: rendered.append(payload),
+        ):
+            rc = compass_update.main()
+
+    assert rc == 0
+    assert len(fetch_count) == 1
+    assert rendered == [the_payload]
+
+
+def test_parse_strips_bold_markers_from_goal_title() -> None:
+    parsed = sg.parse_completed_goals_from_compass_text(
+        "## Shared Goals\n\n- **Photo #sg-photo hunger:2d**\n  - [ ] task #sg-photo\n"
+    )
+    assert parsed[0]["goal_title"] == "Photo"
+
+
 def test_main_keeps_none_payload_error_path() -> None:
     args = types.SimpleNamespace(compass_path="/nonexistent/Compass.md", no_sync_completed=True, logos_context="")
     with mock.patch.object(compass_update, "parse_args", return_value=args), mock.patch.object(

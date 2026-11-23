@@ -193,7 +193,9 @@ def parse_completed_goals_from_compass_text(text: str) -> list[dict[str, Any]]:
             current = {
                 "goal_tag": goal_tag,
                 "goal_id": goal_tag.removeprefix("#"),
-                "goal_title": goal_match.group("title").strip(),
+                # Goal headlines are rendered bold (`- **Title #tag hunger:2d**`);
+                # strip the markdown asterisks so prompts show a clean title.
+                "goal_title": goal_match.group("title").strip().strip("*").strip(),
                 "completed": [],
                 "incomplete": [],
             }

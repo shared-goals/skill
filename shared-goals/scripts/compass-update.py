@@ -359,6 +359,10 @@ def main() -> int:
             console.print(f"[green]Created commits:[/green] {created}")
         else:
             print(f"Created commits: {created}")
+        # Commits mutated the platform: re-fetch, or the file below is rendered
+        # from a stale payload and freshly committed next steps vanish from it.
+        if created:
+            payload = fetch_platform_shared_goals() or payload
 
     update_compass_markdown(payload, path, logos_text=_read_logos_text(args))
 

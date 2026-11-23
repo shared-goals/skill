@@ -17,6 +17,11 @@ Use when the user wants a reusable structured lesson with knowledge verification
 or explicitly asks to turn an existing analysis into a lesson. The input may be
 an ordinary topic or a completed `comparative-analysis` from another skill.
 
+Acceptance can be terse: after another skill's report ends with a lesson offer,
+a bare reply naming this skill (e.g. just "lesson-maker") counts as explicit
+acceptance. Use the mode matching the analysis just offered — a handoff from
+wtd-content-analyze implies `comparative-analysis`.
+
 ## Input
 
 - Topic name or completed analysis
@@ -79,7 +84,8 @@ Required sections:
      when available;
    - semantic paraphrases clearly labelled as such.
    - For WTD quotations link to the public site, not the bare repo path:
-     `https://text.sharedgoals.ru/<page>#<anchor>` (keep the `file:line`
+     `https://<published-site>/<page>#<anchor>` (the reference deployment
+     is `https://text.sharedgoals.ru/<page>#<anchor>`; keep the `file:line`
      reference as provenance alongside the link).
 5. **Comparison table**
    - section heading: use a non-commercial name — avoid "feature comparison"

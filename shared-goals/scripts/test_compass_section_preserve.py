@@ -703,6 +703,38 @@ def test_parse_strips_bold_markers_from_goal_title() -> None:
     assert parsed[0]["goal_title"] == "Photo"
 
 
+def test_parse_accepts_plain_dash_lines_as_tasks() -> None:
+    """A line under a goal without a checkbox is still a task — the checkbox
+    only marks completion. Users paste plain lines under goals."""
+    parsed = sg.parse_completed_goals_from_compass_text(
+        "## Shared Goals\n\n"
+        "- **Photo #sg-photo hunger:2d**\n"
+        "  - [ ] checkbox task #sg-photo\n"
+        "- plain task without checkbox\n"
+        "  - another plain line\n"
+    )
+    assert len(parsed) == 1
+    assert parsed[0]["incomplete"] == ["checkbox task", "plain task without checkbox", "another plain line"]
+    assert parsed[0]["completed"] == []
+
+
+def test_parse_ends_goal_block_at_headings() -> None:
+    """A plain line after a dimension heading (e.g. "- No goals in this
+    dimension.") must not attach to the previous goal's block."""
+    parsed = sg.parse_completed_goals_from_compass_text(
+        "## Shared Goals\n\n"
+        "### Faith (1d)\n\n"
+        "- **WTD text #sg-wtd-writing hunger:1d**\n"
+        "  - [ ] real task #sg-wtd-writing\n"
+        "\n"
+        "### Mind (2d)\n\n"
+        "- No goals in this dimension.\n"
+    )
+    assert len(parsed) == 1
+    assert parsed[0]["goal_id"] == "sg-wtd-writing"
+    assert parsed[0]["incomplete"] == ["real task"]
+
+
 def test_main_keeps_none_payload_error_path() -> None:
     args = types.SimpleNamespace(compass_path="/nonexistent/Compass.md", no_sync_completed=True, logos_context="")
     with mock.patch.object(compass_update, "parse_args", return_value=args), mock.patch.object(

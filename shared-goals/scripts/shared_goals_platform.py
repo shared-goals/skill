@@ -177,12 +177,23 @@ def parse_completed_goals_from_compass_text(text: str) -> list[dict[str, Any]]:
         return []
 
     goal_pattern = re.compile(r"^-\s+(?P<title>.+?)\s+(?P<tag>#[A-Za-z0-9_.-]+)\s+hunger:(?P<hunger>\S+)\s*$")
-    task_pattern = re.compile(r"^\s+-\s+\[(?P<mark>[ xX])\]\s+(?P<task>.+?)\s*$")
+    # The checkbox is optional: a plain dash line under a goal is an incomplete
+    # task too (the checkbox only marks completion). `^\s*` (not `\s+`) so a
+    # non-indented dash line matches as well.
+    task_pattern = re.compile(r"^\s*-\s+(?:\[(?P<mark>[ xX])\]\s+)?(?P<task>.+?)\s*$")
 
     out: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
     for raw in section.splitlines():
         line = raw.rstrip()
+        if line.startswith("#"):
+            # Any heading (dimension headings inside the section) ends the
+            # current goal block: stray dash lines after it (e.g. the rendered
+            # "- No goals in this dimension.") must not attach to the goal above.
+            if current and (current["completed"] or current["incomplete"]):
+                out.append(current)
+            current = None
+            continue
         goal_match = goal_pattern.match(line)
         if goal_match:
             # Keep any goal that owns at least one task line, including
@@ -206,7 +217,7 @@ def parse_completed_goals_from_compass_text(text: str) -> list[dict[str, Any]]:
             task = _strip_goal_tag_suffix(task_match.group("task"), current["goal_tag"])
             if not task:
                 continue
-            if task_match.group("mark").lower() == "x":
+            if (task_match.group("mark") or "").lower() == "x":
                 current["completed"].append(task)
             else:
                 current["incomplete"].append(task)

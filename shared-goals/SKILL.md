@@ -97,7 +97,7 @@ Implemented endpoints:
 - `GET /api/v1/compass/next-steps` → active joined-contract `next_step` items
 - `GET /api/v1/compass/shared-goals` → dimension-grouped goals with hunger days (the Compass.md payload)
 - `GET /api/v1/contracts` → active contracts
-- `POST /api/v1/contracts/{contract_id}/commits` → log a Commit — also the ONLY write path for a goal's `next_step` (a commit with empty `done` is a valid planning-only update)
+- `POST /api/v1/contracts/{contract_id}/commits` → log a Commit — also the ONLY write path for a goal's `next_step`. `kind`: `report` (default) or `planning` — a planning commit stores `done` NULL (no prefill), carries the new plan on `next_step`, and feeds hunger exactly like a report; its minutes default to 1
 - `PATCH /api/v1/contracts/{contract_id}` → update `time_minutes` / `is_active` only (cannot set `next_step`)
 - `POST /api/v1/goals` → create a Goal; `POST /api/v1/goals/{goal_id}/contracts` → join with a Contract
 
@@ -210,12 +210,18 @@ Debug a bad or degraded Daily Compass run from the trace log, not from the sent 
    the `source_ref` digest (first 16 hex of sha256 over
    `{goal_id, completed, incomplete}` with json sort_keys) for each candidate
    hypothesis and compare — the digest identifies the exact call site.
-10. POST /commits with `done=None` makes the MVP instance write the contract's
-   PREVIOUS next_step into `done` (`payload.done or _latest_next_step` in the
-   instance app) — planning commits carry a phantom done that reads like
-   completed work in the commit feed. The next_step data itself is stored
-   correctly; treat the done field of planning commits as noise until the
-   instance drops the fallback.
+10. Commits carry `kind` (`report` | `planning`). A planning commit is a
+   small but real work investment: `done` stays NULL (the instance no longer
+   prefills it from the previous plan), the new plan rides its `next_step`,
+   and it feeds hunger like any commit — the user's stance: a small step
+   toward the goal beats nothing. Planning minutes are prompted with default
+   1: blank must not mean zero, because zero would make it not-work.
+
+## Instance deploy notes
+
+Deploy steps and live-data surgery procedures for the running instance are
+local operational knowledge: they live in this skill's gitignored
+`references/deploy-surgery.md` and are not published with the repo.
 
 ## Area signal
 

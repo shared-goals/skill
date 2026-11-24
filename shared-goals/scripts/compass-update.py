@@ -66,25 +66,31 @@ class RichUI:
             return default
         return raw in {"y", "yes"}
 
-    def optional_minutes(self, goal_title: str) -> int | None:
+    def optional_minutes(self, goal_title: str, *, default: int | None = None) -> int | None:
+        """Ask for minutes. A blank answer means `default` (None => skip).
+
+        Callers pick the blank semantics: the report flow passes None (skip),
+        the planning flow passes 1 (a plan is worth one minute).
+        """
+        hint = "(blank to skip)" if default is None else f"(blank = {default})"
         if IntPrompt is not None:
             assert self.console is not None
-            raw = Prompt.ask(f"Minutes for '{goal_title}' (blank to skip)", default="", console=self.console)
+            raw = Prompt.ask(f"Minutes for '{goal_title}' {hint}", default="", console=self.console)
             raw = raw.strip()
             if not raw:
-                return None
+                return default
             try:
                 value = int(raw)
             except ValueError:
                 if self.console:
                     self.console.print("[yellow]Please enter a whole number or leave blank.[/yellow]")
-                return None
+                return default
             return max(0, value)
 
         while True:
-            raw = input(f"Minutes for '{goal_title}' (blank to skip): ").strip()
+            raw = input(f"Minutes for '{goal_title}' {hint}: ").strip()
             if not raw:
-                return None
+                return default
             try:
                 value = int(raw)
             except ValueError:

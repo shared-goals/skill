@@ -61,8 +61,8 @@ class PlainUI:
     def yes_no(self, prompt: str, default: bool = True) -> bool:
         return _prompt_yes_no(prompt, default)
 
-    def optional_minutes(self, goal_title: str) -> int | None:
-        return _prompt_optional_minutes(goal_title)
+    def optional_minutes(self, goal_title: str, *, default: int | None = None) -> int | None:
+        return _prompt_optional_minutes(goal_title, default=default)
 
     def happy_moment(self, goal_title: str) -> str | None:
         return _prompt_happy_moment(goal_title)
@@ -88,11 +88,13 @@ def _prompt_yes_no(prompt: str, default: bool = True) -> bool:
     return raw in {"y", "yes"}
 
 
-def _prompt_optional_minutes(goal_title: str) -> int | None:
+def _prompt_optional_minutes(goal_title: str, *, default: int | None = None) -> int | None:
+    """Ask for minutes; a blank answer means `default` (None => skip)."""
+    hint = "(blank to skip)" if default is None else f"(blank = {default})"
     while True:
-        raw = input(f"Minutes for '{goal_title}' (blank to skip): ").strip()
+        raw = input(f"Minutes for '{goal_title}' {hint}: ").strip()
         if not raw:
-            return None
+            return default
         try:
             value = int(raw)
         except ValueError:

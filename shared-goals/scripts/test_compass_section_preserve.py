@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import builtins
 import tempfile
 import types
 from pathlib import Path
@@ -426,6 +427,9 @@ class FakeConsole:
         self.lines.append(" ".join(str(a) for a in args))
 
 
+_NO_ANSWER = object()
+
+
 class FakeUI:
     """Scriptable `ui` for sg.sync_compass_tasks: canned answers + call logs.
 
@@ -442,7 +446,10 @@ class FakeUI:
         self.lines: list[str] = []
         self.yes_no_prompts: list[str] = []
         self.yes_no_defaults: list[bool] = []
-        self.minutes_calls: list[str] = []
+        self.minutes_calls: list[tuple[str, int | None]] = []
+        # Explicit answer for optional_minutes; _NO_ANSWER means "user typed
+        # nothing" (blank), which must resolve to the caller's `default`.
+        self.minutes_answer = _NO_ANSWER
         self.happy_calls: list[str] = []
         self.preview_calls: list[tuple[str, str, str | None]] = []
         self.show_completed_calls: list[tuple[str, str, list[str], list[str]]] = []
@@ -472,12 +479,14 @@ class FakeUI:
             return default
         return raw.strip().lower() in {"y", "yes"}
 
-    def optional_minutes(self, goal_title: str) -> int | None:
-        self.minutes_calls.append(goal_title)
-        # Consumed but unused: the old tests canned this answer as None, and the
-        # `answers` list is the no-extra-prompt guard — so this slot must never
-        # be fed by `answers`.
-        return None
+    def optional_minutes(self, goal_title: str, *, default: int | None = None) -> int | None:
+        self.minutes_calls.append((goal_title, default))
+        # Blank answer semantics: whatever `default` says. The old tests canned
+        # this answer as None and never passed a default, so the old behaviour
+        # (blank -> skip -> None) is what they keep seeing.
+        if self.minutes_answer is not _NO_ANSWER:
+            return self.minutes_answer
+        return default
 
     def happy_moment(self, goal_title: str) -> str | None:
         self.happy_calls.append(goal_title)
@@ -573,14 +582,16 @@ def test_sync_prompts_and_creates_planning_commit_for_user_added_lines() -> None
         args, kwargs = create.call_args
         assert args[0] == "c-1"
         assert kwargs["done"] is None
+        assert kwargs["kind"] == "planning"
         assert kwargs["next_step"] == "Platform budget review\nAdd quick backup"
-        assert kwargs["time_minutes"] is None
+        # blank minutes answer + planning default of 1 -> 1 minute recorded
+        assert kwargs["time_minutes"] == 1
         assert kwargs["happy_moment"] is None
         assert kwargs["source_ref"] == sg.commit_source_ref("sg-finance", [], ["Platform budget review", "Add quick backup"])
         # exactly one prompt (the planning prompt): no minutes/happy prompts consumed
         assert ui.yes_no_prompts == ["Add 1 line(s) to 'Finance' next steps?"]
         assert ui.yes_no_defaults == [True]
-        assert ui.minutes_calls == []
+        assert ui.minutes_calls == [("Finance", 1)]
         assert ui.happy_calls == []
         # Accepted planning commit: the line lives on the platform now, it must
         # NOT also be moved into ## Quick Tasks (duplication regression guard).
@@ -698,7 +709,7 @@ def test_sync_completed_goal_flow_unchanged_and_does_not_offer_user_added_line()
         # the music goal is planning-only but has no contract, so it is skipped
         # before any prompt; nothing was user-added, so nothing was moved.
         assert ui.yes_no_prompts == ["Create commit for this goal?", "Edit done value?", "Edit next step value?"]
-        assert ui.minutes_calls == ["Homelab"]
+        assert ui.minutes_calls == [("Homelab", None)]
         assert ui.happy_calls == ["Homelab"]
         assert ui.preview_calls == [("Homelab", "Platform step one", "Platform step two")]
         assert path.read_text(encoding="utf-8") == SHARED_GOALS_COMPLETED_CLEAN
@@ -886,3 +897,188 @@ def test_status_script_sync_prompts_only_for_goals_with_completed_items() -> Non
         assert [p for p in ui.yes_no_prompts if "next steps?" in p] == []
         assert ui.yes_no_prompts == ["Create commit for this goal?", "Edit done value?", "Edit next step value?"]
         assert path.read_text(encoding="utf-8") == SHARED_GOALS_COMPLETED_CLEAN
+
+
+PLANNING_ONLY_GOAL_FILE = "\n".join(
+    [
+        "## Shared Goals",
+        "",
+        "### Mind (1d)",
+        "",
+        "- **Finance #sg-finance hunger:1d**",
+        "  - [ ] Platform budget review #sg-finance",
+        "  - [ ] Add quick backup #sg-finance",
+        "",
+    ]
+)
+
+
+def test_planning_commit_sends_planning_kind_and_minutes_default_one() -> None:
+    # Planning is not reporting: the commit must be tagged `planning`, and the
+    # minutes prompt must offer 1 as its blank default (a planning act still
+    # costs about a minute of real attention).
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "Compass.md"
+        path.write_text(PLANNING_ONLY_GOAL_FILE, encoding="utf-8")
+        contracts = {"sg-finance": {"contract_id": "c-1"}}
+        ui = FakeUI(answers=["y"])
+        # blank answer -> default must win
+        ui.minutes_answer = _NO_ANSWER
+
+        with mock.patch.object(sg, "fetch_active_contracts", return_value=contracts), mock.patch.object(
+            sg, "create_commit"
+        ) as create, mock.patch.object(sg.sys.stdin, "isatty", lambda: True):
+            created = sg.sync_compass_tasks(path, _payload_with_contract(), ui, planning=True)
+
+        assert created == 1
+        create.assert_called_once()
+        args, kwargs = create.call_args
+        assert args[0] == "c-1"
+        assert kwargs["kind"] == "planning"
+        assert kwargs["done"] is None
+        assert kwargs["time_minutes"] == 1
+        # the prompt itself was asked with default=1
+        assert ui.minutes_calls == [("Finance", 1)]
+
+
+def test_completed_commit_sends_report_kind_and_minutes_prompt_default_none() -> None:
+    # The completed/report flow keeps today's semantics: kind=report and a blank
+    # minutes answer means "skip" (None), never an invented 1.
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "Compass.md"
+        path.write_text(SHARED_GOALS_COMPLETED_CLEAN, encoding="utf-8")
+        contracts = {
+            "sg-homelab": {"contract_id": "c-home"},
+            "sg-finance": {"contract_id": "c-fin"},
+        }
+        answers = ["y", "n", "n"] if compass_update.Confirm is None else ["y"]
+        ui = FakeUI(answers=answers, console=FakeConsole())
+        ui.minutes_answer = _NO_ANSWER
+
+        with mock.patch.object(sg, "fetch_active_contracts", return_value=contracts), mock.patch.object(
+            sg, "create_commit"
+        ) as create, mock.patch.object(sg.sys.stdin, "isatty", lambda: True):
+            created = sg.sync_compass_tasks(path, COMPLETED_CLEAN_PAYLOAD, ui, planning=True)
+
+        assert created == 1
+        create.assert_called_once()
+        _args, kwargs = create.call_args
+        assert kwargs["kind"] == "report"
+        assert kwargs["done"] == "Platform step one"
+        assert kwargs["time_minutes"] is None
+        assert ui.minutes_calls == [("Homelab", None)]
+
+
+def test_rich_ui_optional_minutes_blank_resolves_to_default() -> None:
+    """Real RichUI adapter: blank input must yield the caller's default.
+
+    Covers both branches of the adapter:
+    - the Rich branch, exercised with stand-ins for `Prompt`/`IntPrompt` (rich is
+      not installed in the uv env, so a real Rich object is unavailable);
+    - the plain `input()` fallback branch, exercised for real — that is the
+      branch actually shipped on a host without rich.
+    """
+    import contextlib
+    import io
+
+    console = FakeConsole()
+
+    class PromptStub:
+        """`Prompt.ask` stand-in: returns `answer`, records prompt + default."""
+
+        answer = ""
+        calls: list[dict] = []
+
+        @classmethod
+        def ask(cls, prompt, default=None, console=None, **kwargs):
+            cls.calls.append({"prompt": prompt, "default": default})
+            return cls.answer
+
+    class IntPromptStub:
+        """`IntPrompt` stand-in — only its truthiness gates the Rich branch."""
+
+        @staticmethod
+        def ask(prompt, default=None, console=None, **kwargs):
+            raise AssertionError("the adapter prompts through Prompt, not IntPrompt")
+
+    # The gate (`IntPrompt is not None`) and the call (`Prompt.ask`) are two
+    # different symbols, so both must be swapped for the Rich branch to run.
+    int_gate = mock.patch.object(compass_update, "IntPrompt", IntPromptStub)
+    text_gate = mock.patch.object(compass_update, "Prompt", PromptStub)
+    int_gate.__enter__()
+    text_gate.__enter__()
+    try:
+        ui = compass_update.RichUI(console)
+        ask_log = PromptStub.calls
+
+        PromptStub.answer = "  "
+        with contextlib.redirect_stdout(io.StringIO()):
+            assert ui.optional_minutes("Finance", default=1) == 1
+        assert "(blank = 1)" in ask_log[-1]["prompt"]
+
+        # blank answer + no default -> skip (today's report semantics unchanged)
+        PromptStub.answer = ""
+        with contextlib.redirect_stdout(io.StringIO()):
+            assert ui.optional_minutes("Finance") is None
+        assert "(blank to skip)" in ask_log[-1]["prompt"]
+
+        # non-numeric answer keeps today's "give up" behaviour: default wins
+        PromptStub.answer = "ten"
+        with contextlib.redirect_stdout(io.StringIO()):
+            assert ui.optional_minutes("Finance", default=1) == 1
+        with contextlib.redirect_stdout(io.StringIO()):
+            assert ui.optional_minutes("Finance") is None
+
+        # a real number beats the default
+        PromptStub.answer = "7"
+        with contextlib.redirect_stdout(io.StringIO()):
+            assert ui.optional_minutes("Finance", default=1) == 7
+        assert "(blank = 1)" in ask_log[-1]["prompt"]
+
+        # a negative answer is clamped, as before
+        PromptStub.answer = "-5"
+        with contextlib.redirect_stdout(io.StringIO()):
+            assert ui.optional_minutes("Finance", default=1) == 0
+    finally:
+        # Explicit unwinding: mock.patch.stopall() would tear down patches that
+        # belong to the enclosing scope as well.
+        text_gate.__exit__(None, None, None)
+        int_gate.__exit__(None, None, None)
+
+    # --- plain input() fallback branch, exercised for real when it is live ---
+    if compass_update.Prompt is not None:
+        # With rich installed the adapter never reaches input(); the Rich branch
+        # above is the live one, so skip rather than fake an unreachable path.
+        return
+    with mock.patch.object(builtins, "input", lambda prompt="": ""):
+        with contextlib.redirect_stdout(io.StringIO()):
+            assert compass_update.RichUI(console).optional_minutes("Finance", default=1) == 1
+            assert compass_update.RichUI(console).optional_minutes("Finance") is None
+    with mock.patch.object(builtins, "input", lambda prompt="": "7"):
+        with contextlib.redirect_stdout(io.StringIO()):
+            assert compass_update.RichUI(console).optional_minutes("Finance", default=1) == 7
+
+
+def test_plain_ui_optional_minutes_blank_resolves_to_default() -> None:
+    """Real PlainUI adapter: blank input must yield the caller's default."""
+    import contextlib
+    import io
+
+    status = _load_script("daily-shared-goals-status.py")
+
+    def canned_input(*lines):
+        iterator = iter(list(lines) + [""] * 8)
+        return mock.patch.object(builtins, "input", lambda prompt="": next(iterator))
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        with canned_input("", ""):
+            assert status.PlainUI().optional_minutes("Finance", default=1) == 1
+            assert status.PlainUI().optional_minutes("Finance") is None
+        with canned_input("7"):
+            assert status.PlainUI().optional_minutes("Finance", default=1) == 7
+        # the module-level helper follows the same contract
+        with canned_input(""):
+            assert status._prompt_optional_minutes("Finance", default=1) == 1
+        # report semantics unchanged: blank with no default still means skip
+        with canned_input(""):
+            assert status._prompt_optional_minutes("Finance") is None

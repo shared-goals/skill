@@ -111,11 +111,12 @@ def fetch_active_contracts() -> dict[str, dict[str, Any]]:
 def create_commit(
     contract_id: str,
     *,
-    done: str,
+    done: str | None,
     next_step: str | None,
     time_minutes: int | None,
     happy_moment: str | None,
     source_ref: str,
+    kind: str = "report",
 ) -> dict[str, Any]:
     load_env_file()
     base_url = os.environ.get("SHARED_GOALS_API_BASE_URL", "").strip()
@@ -132,6 +133,7 @@ def create_commit(
             "happy_moment": happy_moment,
             "is_public": False,
             "source_ref": source_ref,
+            "kind": kind,
             "user_approved": True,
         }
     ).encode("utf-8")
@@ -425,11 +427,15 @@ def _sync_planning_only_goal(
         return 0
 
     incomplete = list(goal["incomplete"]) + [line for line in user_lines if line not in goal["incomplete"]]
+    # Planning costs about a minute of real attention, so the blank answer is 1
+    # (not "skip"): the act is recorded even when the user just hits Enter.
+    minutes = ui.optional_minutes(title, default=1)
     create_commit(
         str(contract.get("contract_id", "")).strip(),
         done=None,
+        kind="planning",
         next_step="\n".join(incomplete) or None,
-        time_minutes=None,
+        time_minutes=minutes,
         happy_moment=None,
         source_ref=commit_source_ref(goal_id, [], incomplete),
     )
@@ -523,7 +529,7 @@ def sync_compass_tasks(path: Path, payload: dict[str, Any], ui: Any, *, planning
             move_list.extend(user_added.get(goal_id, []))
             continue
 
-        minutes = ui.optional_minutes(goal["goal_title"])
+        minutes = ui.optional_minutes(goal["goal_title"], default=None)
         happy_moment = ui.happy_moment(goal["goal_title"])
         done = "\n".join(goal["completed"]).strip()
         next_step = "\n".join(goal["incomplete"]).strip() or None
@@ -532,6 +538,7 @@ def sync_compass_tasks(path: Path, payload: dict[str, Any], ui: Any, *, planning
         create_commit(
             str(contract.get("contract_id", "")).strip(),
             done=done,
+            kind="report",
             next_step=next_step,
             time_minutes=minutes,
             happy_moment=happy_moment,

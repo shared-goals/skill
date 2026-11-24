@@ -2,6 +2,11 @@
 
 These Hermes skills let an agent work with the [Shared Goals platform](https://github.com/shared-goals/instance) on a user’s behalf. The platform stores goals, contracts, and commits. A user’s writing supplies a different kind of context: [Text Forge](https://github.com/shared-goals/text-forge) can project a Markdown collection such as [*What to Do?* (WTD)](https://github.com/bongiozzo/whattodo) into Hindsight. The agent can then retrieve relevant passages, and the person and agent can refer to the same source when deciding what to do next. Neither WTD nor Hindsight is required to use the platform API.
 
+> **Agents working in this repo:** read [AGENTS.md](AGENTS.md) first. This repo is
+> public; local specifics belong in gitignored `references/`; a pre-push audit
+> hook lives in `.githooks/` — enable once per clone:
+> `git config core.hooksPath .githooks`.
+
 ## Shared Goals Repository Map
 
 Read the repositories in this order when you need the whole system context:

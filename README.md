@@ -86,6 +86,7 @@ Daily Compass is the seed of something larger: a companion that asks each mornin
 | Text and learning | `wtd-content-analyze` | Compare outside material with WTD, verifying quotations against the source |
 | Text and learning | `wtd-changelog` | Draft a digest of meaningful changes between revisions of WTD |
 | Text and learning | `lesson-maker` | Turn a topic or reviewed analysis into a self-contained HTML lesson |
+| Text and learning | `english-practice` | Correct the author's English in conversation and track recurring error patterns |
 
 ## Local-Only Area Skills
 
